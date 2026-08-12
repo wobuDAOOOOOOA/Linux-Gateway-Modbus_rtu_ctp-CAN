@@ -4,22 +4,22 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
-#include"modbus_tcp.h"
-#include"modbus_rtu.h"
-#include"can.h"
-#include"mqtt_huawei.h"
-#include"log.h"
 #include <linux/can.h>
 #include <sys/socket.h>
-#include"config.h"
 #include"gateway.h"
-#include"relay.h"
-#include"bmp280.h"
-#include"data_cache.h"
+#include"modbus_tcp.h"
+#include"modbus_rtu.h"
+#include"can.h"          
+#include"mqtt_huawei.h" 
+#include"log.h"      //日志分级
+#include"config.h"  //配置文件外置
+#include"relay.h"  //下发测试modbus_tcp继电器模块
+#include"bmp280.h" //bmp280 测试用，轮询在mqtt线程，删掉不影响
+#include"data_cache.h" //本地环形缓冲区缓存 //掉电丢失数据
 #define ture 1
 
   // 全局唯一实体定义（全工程仅此一处）
-    gateway_manager_t mgr;
+ gateway_manager_t mgr;
 // ====================== 资源初始化函数 ======================
 static void gateway_manager_init(gateway_manager_t *mgr)
 {
@@ -28,37 +28,43 @@ static void gateway_manager_init(gateway_manager_t *mgr)
     // 初始化锁
     pthread_mutex_init(&mgr->data_mutex, NULL);
     pthread_mutex_init(&mgr->bus_mutex, NULL);
-    pthread_mutex_init(&mgr->read_mutex, NULL);
+   // pthread_mutex_init(&mgr->read_mutex, NULL);
 
        // 开启运行开关
     mgr->running = ture;
-    mgr->rtu_collect_enable=1;
-    mgr->tcp_collect_enable=1;
+    // mgr->rtu_collect_enable=1;
+    // mgr->tcp_collect_enable=1;
     // 初始化默认寄存器数据
-    mgr->regs[0] = 1;
-    mgr->regs[1] = 2;
+    // mgr->regs[0] = 1;
+    // mgr->regs[1] = 2;
 }
+// ====================== 退出清理函数 ======================
 
-// ====================== 工业级终极清理函数 ======================
 void gateway_cleanup(void)
 {
     LOG_INFO("执行网关全资源释放...");
 
-    // 直接操作全局mgr，去掉多余临时指针
-    if (mgr.tcp_ctx) {
-        modbus_close(mgr.tcp_ctx);
-        modbus_free(mgr.tcp_ctx);
-        mgr.tcp_ctx = NULL;
+    // ===== 1. 释放所有 TCP 设备资源 =====
+    for (int i = 0; i < mgr.tcp_device_count; i++) {
+        if (mgr.tcp_devices[i].ctx != NULL) {
+            modbus_close(mgr.tcp_devices[i].ctx);
+            modbus_free(mgr.tcp_devices[i].ctx);
+            mgr.tcp_devices[i].ctx = NULL;
+            LOG_DEBUG("TCP设备%d: 已释放Modbus上下文", i);
+        }
     }
 
-    // 关闭RTU串口连接
-    if (mgr.rtu_ctx) {
-        modbus_close(mgr.rtu_ctx);
-        modbus_free(mgr.rtu_ctx);
-        mgr.rtu_ctx = NULL;
+    // ===== 2. 释放所有 RTU 设备资源 =====
+    for (int i = 0; i < mgr.rtu_device_count; i++) {
+        if (mgr.rtu_devices[i].ctx != NULL) {
+            modbus_close(mgr.rtu_devices[i].ctx);
+            modbus_free(mgr.rtu_devices[i].ctx);
+            mgr.rtu_devices[i].ctx = NULL;
+            LOG_DEBUG("RTU设备%d: 已释放Modbus上下文", i);
+        }
     }
 
-    // 销毁锁资源
+    // ===== 3. 销毁互斥锁 =====
     pthread_mutex_destroy(&mgr.data_mutex);
     pthread_mutex_destroy(&mgr.bus_mutex);
 
@@ -80,7 +86,7 @@ void init_tcp_devices(void)
             continue;
         }
 
-        // ★★★ 核心：取数组元素 ★★★
+        
         // tcp_devices[count] 就是第 count 个设备
         // 用 & 取地址，用 -> 访问结构体成员
         tcp_device_config_t *dev = &mgr.tcp_devices[count];
@@ -180,7 +186,7 @@ void *modbus_tcp_read_generic(void *arg)
                 char time_str[32];
                 strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&dev->tcp_fail_time));
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg),
-                         "TCP离线，首次故障: %s", time_str);
+                         "TCP离线,首次故障: %s", time_str);
             }
             sleep(60);
             continue;
@@ -241,6 +247,7 @@ void *modbus_rtu_read_generic(void *arg)
     LOG_INFO("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d, 读地址=%d, 读数量=%d",
              idx, dev->port, dev->baudrate, dev->slave_id,
              dev->read_addr, dev->read_count);
+    uint32_t can_id = CAN_ID_BASE_RTU + idx;  // RTU设备0→0x100, 设备1→0x101
 
     while (mgr.running) {
         // ===== 采集开关状态变化检测 =====
@@ -306,7 +313,7 @@ void *modbus_rtu_read_generic(void *arg)
 
         // 发送到 CAN 总线
         pthread_mutex_lock(&mgr.bus_mutex);
-        if (can_send(0x123, 2, dev->regs) != 0) {
+        if (can_send(can_id, 2, dev->regs) != 0) {
             LOG_WARN("RTU设备%d: CAN数据发送失败", idx);
         }
         pthread_mutex_unlock(&mgr.bus_mutex);
@@ -321,21 +328,28 @@ void *modbus_rtu_read_generic(void *arg)
 void *can_receive_pthread(void *arg) {
     unsigned char data[8];
     int len;
+        uint32_t can_id;
 
     while (mgr.running) {
-
-        if (can_receive(data, &len) == 0) {
-
-            if (len >= 2) {
-        pthread_mutex_lock(&mgr.bus_mutex);
-
-                mgr.latest_humidity = data[0];
-                mgr.latest_temperature = data[1];
-        pthread_mutex_unlock(&mgr.bus_mutex);
-
+      
+      //  pthread_mutex_lock(&mgr.bus_mutex);
+        if ( can_receive(&can_id, data, &len) == 0) {
+            // 构造一个临时 can_frame 给 handler 用
+            struct can_frame frame;
+            frame.can_id = can_id;
+            frame.can_dlc = len;
+            for (int i = 0; i < len && i < 8; i++) {
+                frame.data[i] = data[i];
+            }
+            
+            // 查表路由
+            for (int i = 0; i < ROUTE_TABLE_SIZE; i++) {
+                if (can_id >= route_table[i].base && can_id < route_table[i].max) {
+                    route_table[i].handler(can_id, &frame);
+                    break;
+                }
             }
         }
-        sleep(1);
     }
     return NULL;
 }
@@ -356,18 +370,20 @@ void *MQTT_pthread(void *arg) {
 
         if (mgr.mqtt_connect_states) {
             data_cache_flush();
-         //  pthread_mutex_lock(&mgr.data_mutex);
+            pthread_mutex_lock(&mgr.data_mutex);
             MQTT_publish(mgr.latest_temperature, mgr.latest_humidity, mgr.press);
-         //  pthread_mutex_unlock(&mgr.data_mutex);
+          pthread_mutex_unlock(&mgr.data_mutex);
         } else {
             data_cache_push_telemetry(mgr.latest_temperature, mgr.latest_humidity, mgr.press);
+         //   data_cache_push_alarm_rtu("RTU",);
+            //data_cache_push_alarm_rtu("RTU",); //本地缓冲和上报还没适配好
             printf("【缓存】MQTT离线，数据已缓存\n");
         }
 
    // ===== RTU 设备状态上报 =====
         for (int i = 0; i < mgr.rtu_device_count; i++) {
             rtu_device_t *dev = &mgr.rtu_devices[i];
-          //  if (dev->status != dev->last_reported_status) {
+            if (dev->status != dev->last_reported_status) {
                 if (dev->status == 0) {
                     mqtt_publish_alarm("RTU", i, "running", "RTU", "RTU采集运行中");
                 } else if (dev->status == 1) {
@@ -376,14 +392,14 @@ void *MQTT_pthread(void *arg) {
                     mqtt_publish_alarm("RTU", i, "offline", "RTU", dev->alarm_msg);
                 }
                 dev->last_reported_status = dev->status;
-            //}
+            }
         }
 
 
 // ===== TCP 设备状态上报（遍历所有设备） =====
 for (int i = 0; i < mgr.tcp_device_count; i++) {
     tcp_device_config_t *dev = &mgr.tcp_devices[i];
-    //if (dev->status != dev->last_reported_status) {
+    if (dev->status != dev->last_reported_status) {
         if (dev->status == 0) {
             mqtt_publish_alarm("TCP", i, "running", "TCP", "TCP采集运行中");
         } else if (dev->status == 1) {
@@ -392,7 +408,7 @@ for (int i = 0; i < mgr.tcp_device_count; i++) {
             mqtt_publish_alarm("TCP", i, "offline", "TCP", dev->alarm_msg);
         }
         dev->last_reported_status = dev->status;
-   // }
+    }
 }
         // ===== ★★★ CAN 状态上报（修正版） ★★★ =====
         can_status_t can_status;
@@ -420,28 +436,12 @@ for (int i = 0; i < mgr.tcp_device_count; i++) {
 // ====================== 主函数 ======================
 int main(void) {
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     // rtu初始化随机种子
     srand((unsigned)time(NULL));
-    // 注册全局终极清理
+    // 注册全局清理
     atexit(gateway_cleanup);
-
     // 初始化全局mgr资源
     gateway_manager_init(&mgr);
-
     // 加载配置
     config_set_default(&cfg);
     config_load("./gateway.conf", &cfg);
@@ -457,7 +457,7 @@ int main(void) {
     init_tcp_devices();
     init_rtu_devices();
 
-    // 线程统一传全局mgr地址，全工程完全统一
+
 // 动态创建 RTU 线程
 for (int i = 0; i < mgr.rtu_device_count; i++) {
     rtu_device_t  *dev = &mgr.rtu_devices[i];
@@ -475,10 +475,10 @@ for (int i = 0; i < mgr.tcp_device_count; i++) {
     // 每个线程传入设备索引，线程内部根据索引找到对应的设备
     int *idx_ptr = malloc(sizeof(int));
     *idx_ptr = i;
-    pthread_create(&mgr.threads[4 + i], NULL, modbus_tcp_read_generic, idx_ptr);
+    pthread_create(&mgr.threads[2 + i], NULL, modbus_tcp_read_generic, idx_ptr);
 }   
 
- pthread_create(&mgr.threads[2], NULL, can_receive_pthread, &mgr);
+    pthread_create(&mgr.threads[1], NULL, can_receive_pthread, &mgr);
     pthread_create(&mgr.threads[0], NULL, MQTT_pthread, &mgr);
 
     // 主线程循环

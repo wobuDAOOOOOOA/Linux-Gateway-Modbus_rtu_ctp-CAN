@@ -3,7 +3,7 @@
 
 // ====================== 多设备最大数量定义 ======================
 #define MAX_TCP_DEVICES 4    // TCP设备最大数量
-#define MAX_RTU_DEVICES 2  // RTU设备最大数量
+#define MAX_RTU_DEVICES 4  // RTU设备最大数量
 
 typedef struct {
     // ===== RTU配置（单设备） =====
@@ -39,10 +39,16 @@ typedef struct {
     char mqtt_broker[64];
     int  mqtt_port;
     char mqtt_topic[256];
-    char mqtt_client_id[64];
+    char mqtt_client_id[256];
     char mqtt_username[256];
     char mqtt_password[256];
 
+    char mqtt_cmd_topic[128];   // 下行命令订阅主题
+    char service_id[64];        // 物模型服务ID
+    char prop_temp[64];         // 温度属性名
+    char prop_hum[64];          // 湿度属性名
+    char prop_press[64];        // 气压属性名
+    char prop_PAYLOAD_TEMPLATE[256];  
     // ===== 继电器配置 =====
     char relay_ip[64];
     int  relay_port;

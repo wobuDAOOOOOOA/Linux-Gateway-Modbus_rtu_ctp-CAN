@@ -52,9 +52,16 @@ void config_set_default(gateway_config_t *cfg_ptr)
     strcpy(cfg_ptr->mqtt_broker, "117.78.5.125");
     cfg_ptr->mqtt_port = 1883;
     strcpy(cfg_ptr->mqtt_topic, "$oc/devices/69fe6602cbb0cf6bb958fad5_TempHumi/sys/properties/report");
-    strcpy(cfg_ptr->mqtt_client_id, "69fe6602cbb0cf6bb958fad5_TempHumi_0_0_2026070207");
+    strcpy(cfg_ptr->mqtt_client_id, "69fe6602cbb0cf6bb958fad5_TempHumi_0_0_2026080900");
     strcpy(cfg_ptr->mqtt_username, "69fe6602cbb0cf6bb958fad5_TempHumi");
-    strcpy(cfg_ptr->mqtt_password, "cf059d90b349820ece3aa4487f92cd846758b82f5d4434fc078d117469b0364f");   //这个才是密码
+    strcpy(cfg_ptr->mqtt_password, "70a70b5b04c6f8492368d0dd380297d1c9e953083b7c37e1eca8f08cc66b0f55");   //这个才是密码
+    //服务名 topic格式 属性名
+    strcpy(cfg_ptr->mqtt_cmd_topic, "$oc/devices/+/sys/command/#");
+    strcpy(cfg_ptr->service_id, "Telemetry");
+    strcpy(cfg_ptr->prop_temp, "temperature");
+    strcpy(cfg_ptr->prop_hum, "humidity");
+    strcpy(cfg_ptr->prop_press, "press");
+
 
     // ★★★ 继电器默认配置（新增） ★★★
     strcpy(cfg_ptr->relay_ip, "192.168.0.10");
@@ -128,6 +135,13 @@ int config_load(const char *filename, gateway_config_t *cfg_ptr)
         else if (strcmp(key, "mqtt_client_id") == 0) strcpy(cfg_ptr->mqtt_client_id, value);
         else if (strcmp(key, "mqtt_username") == 0) strcpy(cfg_ptr->mqtt_username, value);
         else if (strcmp(key, "mqtt_password") == 0) strcpy(cfg_ptr->mqtt_password, value);
+          //MQTT服务名 上报topic 属性名等
+        else if (strcmp(key, "mqtt_cmd_topic") == 0) strcpy(cfg_ptr->mqtt_cmd_topic, value);
+        else if (strcmp(key, "service_id") == 0) strcpy(cfg_ptr->service_id, value);
+        else if (strcmp(key, "prop_temp") == 0) strcpy(cfg_ptr->prop_temp, value);
+        else if (strcmp(key, "prop_hum") == 0) strcpy(cfg_ptr->prop_hum, value);
+        else if (strcmp(key, "prop_press") == 0) strcpy(cfg_ptr->prop_press, value);
+
 
         // ★★★ 继电器配置 ★★★
         else if (strcmp(key, "relay_ip") == 0) strcpy(cfg_ptr->relay_ip, value);
@@ -175,7 +189,7 @@ for (int i = 0; i < MAX_RTU_DEVICES; i++) {
     else if (strcmp(key, key_count) == 0) cfg_ptr->rtu_read_count[i] = atoi(value);
     else if (strcmp(key, key_enable) == 0) cfg_ptr->rtu_enable[i] = atoi(value);
 
-    // ... 以此类推
+
 }
     }
 

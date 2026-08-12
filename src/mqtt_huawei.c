@@ -7,14 +7,17 @@
 #include "mqtt_huawei.h"
 #include "relay.h"
 #include "log.h"
-extern gateway_config_t cfg;
+#include "config.h"
+#include "gateway.h"
+
+//extern gateway_config_t cfg;   //声明我要在这个文件使用config.h开放给我的cfg结构体
 static int mqtt_connected_flag = 0;
 
 // 全局MQTT句柄
 struct mosquitto *g_mosq = NULL;
 
-// 【关键修复】全局网关结构体实体定义（解决链接报错 undefined reference to mgr）
-extern gateway_manager_t mgr;
+
+//extern gateway_manager_t mgr;  //用mgr访问device结构体的采集使能成员的值，在下发函数中修改使用他
 
 // ====================== 重连成功后重新订阅 ======================
 static void mqtt_resubscribe(void)
@@ -26,7 +29,7 @@ static void mqtt_resubscribe(void)
         fprintf(stderr, "MQTT: 重连后重新订阅失败, 错误码: %d\n", ret);
     }
 }
-
+//to do cJSON解析库
 // ====================== MQTT下行指令接收回调 ======================
 void mqtt_message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg)
 {
@@ -58,10 +61,10 @@ void mqtt_message_callback(struct mosquitto *mosq, void *obj, const struct mosqu
         int is_start = (strstr(payload_buf, "rtu_start") != NULL);
         int is_all = (strstr(payload_buf, "all") != NULL);
         int device_idx = -1;
-
         // 解析设备编号
         if(!is_all) {
-            char *last_char = payload_buf + strlen(payload_buf) - 1;
+            char *last_char = payload_buf + strlen(payload_buf) - 1;  //这里不应该判断request id吗，待会打印看看
+
             device_idx = *last_char - '0';
             if(device_idx < 0 || device_idx >= mgr.rtu_device_count) {
                 LOG_ERROR("MQTT下发: 无效的RTU设备编号 %d", device_idx);
@@ -137,7 +140,7 @@ void on_connect(struct mosquitto *mosq, void *obj, int rc)
         printf("MQTT: 连接成功\n");
         // ★★★ 连接成功后立即订阅 ★★★
         mqtt_resubscribe();
-    } else {
+    } else {              //to do 进到else后用ping判断是本地网络断了还是mqtt断了，如果是本地网络断了就给mqtt_connected_flag赋值2
         mqtt_connected_flag = 0;
         printf("MQTT: 连接失败, rc=%d\n", rc);
     }
@@ -148,6 +151,11 @@ void on_disconnect(struct mosquitto *mosq, void *obj, int rc)
 {
     mqtt_connected_flag = 0;
     printf("MQTT: 断开连接, rc=%d\n", rc);
+
+    // mosquitto 库的网络连接和重连机制由其内部管理。
+    // 只要你使用了 mosquitto_loop_start()，它会在后台自动处理重连，
+    // 你通常不需要在 on_disconnect 中手动释放 g_mosq 本身——这个句柄应该在整个程序生命周期中保持有效，直到你主动调用 
+    // mosquitto_destroy() 销毁它。
 }
 
 // ====================== 你原有全部上报函数 ======================
@@ -161,7 +169,7 @@ int mqtt_publish_data(float temperature, float humidity , float press)
         return -1;
     }
 
-    snprintf(payload, sizeof(payload), PAYLOAD_TEMPLATE, SERVICE_ID, PROP_TEMP, temperature, PROP_HUM, humidity ,PROP_PRESS,press);
+    snprintf(payload, sizeof(payload), PAYLOAD_TEMPLATE, cfg.service_id, cfg.prop_temp, temperature, cfg.prop_hum, humidity ,cfg.prop_press,press);
     ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic, strlen(payload), payload, 1, false);
     if (ret != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "错误: 数据发布失败，错误码: %d\n", ret);
@@ -194,7 +202,7 @@ int mqtt_publish_TCP_alarm(const char *Modbus_TCP_alarm_type, const char *Modbus
         "\"Modbus_TCP_alarm_module\":\"%s\","
         "\"Modbus_TCP_alarm_msg\":\"%s\","
         "\"Modbus_TCP_alarm_time\":\"%s\"}}]}",
-        SERVICE_ID, Modbus_TCP_alarm_type, Modbus_TCP_alarm_module, Modbus_TCP_alarm_msg, Modbus_TCP_alarm_time);
+        cfg.service_id, Modbus_TCP_alarm_type, Modbus_TCP_alarm_module, Modbus_TCP_alarm_msg, Modbus_TCP_alarm_time);
 
     ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic, strlen(payload), payload, 1, false);
     if (ret != MOSQ_ERR_SUCCESS) {
@@ -226,7 +234,7 @@ int mqtt_publish_RTU_alarm(const char *Modbus_RTU_alarm_type, const char *Modbus
         "\"Modbus_RTU_alarm_module\":\"%s\","
         "\"Modbus_RTU_alarm_msg\":\"%s\","
         "\"Modbus_RTU_alarm_time\":\"%s\"}}]}",
-        SERVICE_ID, Modbus_RTU_alarm_type, Modbus_RTU_alarm_module, Modbus_RTU_alarm_msg, Modbus_RTU_alarm_time);
+        cfg.service_id, Modbus_RTU_alarm_type, Modbus_RTU_alarm_module, Modbus_RTU_alarm_msg, Modbus_RTU_alarm_time);
 
     ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic, strlen(payload), payload, 1, false);
     if (ret != MOSQ_ERR_SUCCESS) {
@@ -258,7 +266,7 @@ int mqtt_publish_CAN_alarm(const char *CAN_alarm_type, const char *CAN_alarm_mod
         "\"CAN_alarm_module\":\"%s\","
         "\"CAN_alarm_msg\":\"%s\","
         "\"CAN_alarm_time\":\"%s\"}}]}",
-        SERVICE_ID, CAN_alarm_type, CAN_alarm_module, CAN_alarm_msg, CAN_alarm_time);
+        cfg.service_id, CAN_alarm_type, CAN_alarm_module, CAN_alarm_msg, CAN_alarm_time);
 
     ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic, strlen(payload), payload, 1, false);
     if (ret != MOSQ_ERR_SUCCESS) {
@@ -313,19 +321,24 @@ void mqtt_send_command_response(const char *request_id, int result_code, const c
 }
 
 // ====================== MQTT初始化 ======================
-int mqtt_Init()
+int mqtt_Init()    //to do 所有的错误处理都是怎么写的。
 {
     int ret;
 
     mosquitto_lib_init();
     
-    g_mosq = mosquitto_new(MQTT_CLIENT_ID, true, NULL);
+    g_mosq = mosquitto_new("69fe6602cbb0cf6bb958fad5_TempHumi_0_0_2026080901", true, NULL);
+    printf("【调试】mosquitto_new 设置的 Client ID = [%s]\n", cfg.mqtt_client_id);
+
     if (!g_mosq) {
         fprintf(stderr, "错误: 创建 MQTT 客户端失败\n");
         return -1;
     }
 
     ret = mosquitto_username_pw_set(g_mosq, cfg.mqtt_username, cfg.mqtt_password);
+        printf("【调试】mosquitto_new 设置的 mqtt_username = [%s]\n", cfg.mqtt_username);
+    printf("【调试】mosquitto_new 设置的cfg.mqtt_password = [%s]\n", cfg.mqtt_password);
+
     if (ret != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "错误: 设置用户名/密码失败，错误码: %d\n", ret);
         return -1;
@@ -339,26 +352,37 @@ int mqtt_Init()
     mosquitto_message_callback_set(g_mosq, mqtt_message_callback);
 
     // ★★★★★ 设置重连参数 ★★★★★
-    // 参数: 初始延时1秒, 最大延时60秒, 启用指数退避
     mosquitto_reconnect_delay_set(g_mosq, 1, 60, true);
+    // 含义: 初始等待1秒，最大等待60秒，启用指数退避
 
-    // 连接到华为云 MQTT Broker
-    ret = mosquitto_connect(g_mosq, cfg.mqtt_broker, cfg.mqtt_port, 60);
+  
+
+    // // 连接到华为云 MQTT Broker
+    // ret = mosquitto_connect(g_mosq, cfg.mqtt_broker, cfg.mqtt_port, 60);
+    // if (ret != MOSQ_ERR_SUCCESS) {
+    //     fprintf(stderr, "错误: 连接失败，错误码: %d。\n", ret);
+    //     fprintf(stderr, "请检查: 1. 主机地址和端口 2. 设备ID/密钥是否正确 3. 网络是否连通\n");
+    //     printf("MQTT: 首次连接未成功，后台将自动重连\n");
+
+    //     return -1;
+    // }
+  //实现断线重连的在这里mosquitto_loop_start
+   // 你启动了一个独立的后台循环线程
+    mosquitto_loop_start(g_mosq);
+    // 这个线程会长期运行，负责网络IO、心跳和自动重连
+  // ★★★ 关键修改：再发起异步连接（不阻塞）★★★
+    ret = mosquitto_connect_async(g_mosq, cfg.mqtt_broker, cfg.mqtt_port, 60);
     if (ret != MOSQ_ERR_SUCCESS) {
-        fprintf(stderr, "错误: 连接失败，错误码: %d。\n", ret);
-        fprintf(stderr, "请检查: 1. 主机地址和端口 2. 设备ID/密钥是否正确 3. 网络是否连通\n");
+        fprintf(stderr, "错误: 发起异步连接请求失败，错误码: %d。\n", ret);
         return -1;
     }
-
-    // ★★★★★ 启动异步循环（内部自动处理重连） ★★★★★
-    mosquitto_loop_start(g_mosq);
 
     printf("成功: MQTT客户端已使用密钥方式连接华为云 IoTDA 平台，开启指令监听\n");
     printf("MQTT: 重连机制已启用(初始延时1s, 最大60s, 指数退避)\n");
 
-    // 默认上电开启RTU采集
-    mgr.rtu_collect_enable = 1;
-    mgr.running = 1;
+    // // 默认上电开启RTU采集
+    // mgr.rtu_collect_enable = 1;
+    // mgr.running = 1;
 
     return 0;
 }
@@ -418,7 +442,7 @@ int mqtt_publish_alarm(const char *device_type, int device_index,
         "\"%s\":\"%s\","
         "\"%s\":\"%s\","
         "\"%s\":\"%s\"}}]}",
-        SERVICE_ID,
+        cfg.service_id,
         prop_alarm_type, alarm_type,
         prop_alarm_module, alarm_module,
         prop_alarm_msg, alarm_msg,

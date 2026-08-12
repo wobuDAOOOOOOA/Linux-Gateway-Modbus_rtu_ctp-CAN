@@ -10,24 +10,44 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <time.h>
+#include "gateway.h" 
 #include "log.h"
 #include "config.h"
-// ★★★ 删除 #include "mqtt_huawei.h" ★★★
-#include "can.h"  // 新增：包含 can_status_t 定义
+#include "can.h"  //can_status_t 定义
 
-extern gateway_config_t cfg;
-
-#define CAN_MAX_RETRY     3
-#define CAN_BASE_DELAY    5
-#define CAN_ALARM_INTERVAL 30
+//extern gateway_config_t cfg;
 
 static int s = -1;
 static struct ifreq ifr;
 static struct sockaddr_can addr;
 static struct can_frame frame;
 
+
 // ====================== CAN 状态（供外部读取） ======================
 static can_status_t g_can_status = {0};
+
+
+
+
+/////////////
+/////////////
+// ===== 各类型处理函数 =====
+ void handle_rtu_frame(uint32_t can_id, struct can_frame *frame)
+{
+    int dev_idx = can_id - CAN_ID_BASE_RTU;
+    if (dev_idx >= 0 && dev_idx < mgr.rtu_device_count) {
+        pthread_mutex_lock(&mgr.data_mutex);
+        for (int i = 0; i < frame->can_dlc && i < 8; i++) {
+            mgr.rtu_devices[dev_idx].regs[i] = frame->data[i];
+                                printf("RTU设备{%d} 存入数值：%d\n",dev_idx,mgr.rtu_devices[dev_idx].regs[i]);
+                            
+        }
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+}
+
+
+
 
 // ====================== 内部状态更新函数 ======================
 static void can_reset_stats(void)
@@ -214,7 +234,7 @@ int can_send(uint16_t id, uint16_t dlc, unsigned short *data)
             }
         }
 
-        tx_frame.can_id = 0x123;
+        tx_frame.can_id = id;
         tx_frame.can_dlc = dlc;
         for (int i = 0; i < dlc; i++) {
             tx_frame.data[i] = data[i];
@@ -247,20 +267,15 @@ int can_send(uint16_t id, uint16_t dlc, unsigned short *data)
 }
 
 // ====================== CAN 接收 ======================
-int can_receive(unsigned char *buffer, int *len)
+int can_receive(uint32_t *can_id, unsigned char *buffer, int *len)
 {
-                printf("XXXXCAN  SETP 11111\n");
-
     if (s < 0) {
         LOG_WARN("CAN:接收时socket无效");
         can_reinit();
-        // ★★★ 状态已经在 can_reinit 里记录了 ★★★
         return -1;
     }
 
-
     int nbytes = read(s, &frame, sizeof(frame));
-                printf("XXXXCAN  SETP 2222\n");
 
     if (nbytes < 0) {
         if (errno != EAGAIN) {
@@ -269,7 +284,7 @@ int can_receive(unsigned char *buffer, int *len)
             can_reinit();
             return -1;
         }
-        return 1;
+        return 1;  // EAGAIN 表示暂时没有数据
     }
 
     if (nbytes == sizeof(frame)) {
@@ -277,11 +292,24 @@ int can_receive(unsigned char *buffer, int *len)
         if (g_can_status.is_in_fault) {
             can_mark_fault_end();
         }
-        *len = frame.can_dlc;
-        for (int i = 0; i < frame.can_dlc; i++) {
-            buffer[i] = frame.data[i];
+        
+        // ★★★ 把 can_id 传出去 ★★★
+        if (can_id) {
+            *can_id = frame.can_id;
         }
-        LOG_DEBUG("CAN:收到 ID=0x%x, DLC=%d, data:%d", frame.can_id, frame.can_dlc,frame.data[0]);
+        
+        if (len) {
+            *len = frame.can_dlc;
+        }
+        
+        if (buffer) {
+            for (int i = 0; i < frame.can_dlc && i < 8; i++) {
+                buffer[i] = frame.data[i];
+            }
+        }
+        
+        LOG_DEBUG("CAN:收到 ID=0x%x, DLC=%d, data:%d", 
+                  frame.can_id, frame.can_dlc, frame.data[0]);
         return 0;
     }
 

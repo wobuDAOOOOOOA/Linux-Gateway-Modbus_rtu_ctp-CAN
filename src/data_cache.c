@@ -4,7 +4,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <time.h>
-
+#include "gateway.h"
 static data_cache_t g_cache;
 static pthread_mutex_t g_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -21,7 +21,7 @@ static void cache_push_record(data_record_t *rec)
     }
     
     int idx = g_cache.head;
-    memcpy(&g_cache.records[idx], rec, sizeof(data_record_t));
+    memcpy(&g_cache.records[idx], rec, sizeof(data_record_t));    //这里还是真正的写入，所有在这个函数内部加锁
     
     g_cache.head = (g_cache.head + 1) % CACHE_SIZE;
     g_cache.count++;
@@ -43,13 +43,13 @@ int data_cache_push_telemetry(float temp, float humi, float press)
     data_record_t rec;
     memset(&rec, 0, sizeof(rec));
     
-    rec.type = CACHE_TYPE_TELEMETRY;
+    rec.type = CACHE_TYPE_TELEMETRY;   
     rec.timestamp = time(NULL);
     rec.temperature = temp;
     rec.humidity = humi;
     rec.pressure = press;
     
-    cache_push_record(&rec);
+    cache_push_record(&rec);   
     return 0;
 }
 
@@ -99,20 +99,22 @@ void data_cache_flush(void)
     
     while (g_cache.count > 0) {
         data_record_t *rec = &g_cache.records[g_cache.tail];
-        
+        for (int i = 0; i < mgr.tcp_device_count; i++) {
+
         switch (rec->type) {
             case CACHE_TYPE_TELEMETRY:
                 mqtt_publish_data(rec->temperature, rec->humidity, rec->pressure);
                 break;
             case CACHE_TYPE_ALARM_RTU:
-                mqtt_publish_RTU_alarm(rec->alarm_type, rec->alarm_module, rec->alarm_msg);
+                mqtt_publish_alarm(rec->alarm_type,i, rec->alarm_module, rec->alarm_type,rec->alarm_msg);
                 break;
             case CACHE_TYPE_ALARM_TCP:
-                mqtt_publish_TCP_alarm(rec->alarm_type, rec->alarm_module, rec->alarm_msg);
+                mqtt_publish_alarm(rec->alarm_type,i, rec->alarm_module, rec->alarm_type,rec->alarm_msg);
                 break;
             default:
                 break;
         }
+    }
         
         g_cache.tail = (g_cache.tail + 1) % CACHE_SIZE;
         g_cache.count--;

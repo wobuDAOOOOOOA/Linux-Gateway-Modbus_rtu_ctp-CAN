@@ -24,7 +24,7 @@ SRCS = $(SRC_DIR)/main.c \
 TARGET = gateway
 
 # 编译选项
-CFLAGS = -Wall -O2 -I$(INC_DIR) -I/home/wdz/libmodbus_arm/include -I/home/wdz/mosquitto-2.0.18/include
+CFLAGS = -Wall -g -O0 -I$(INC_DIR) -I/home/wdz/libmodbus_arm/include -I/home/wdz/mosquitto-2.0.18/include
 LDFLAGS = -L$(LIB_DIR) -L$(MOSQ_DIR) -lmodbus -lmosquitto -lpthread
 
 all: $(TARGET)
