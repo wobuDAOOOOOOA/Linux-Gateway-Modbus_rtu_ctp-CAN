@@ -9,7 +9,7 @@
 #include "log.h"
 #include "config.h"
 #include "gateway.h"
-
+#include "data_cache.h"
 //extern gateway_config_t cfg;   //声明我要在这个文件使用config.h开放给我的cfg结构体
 static int mqtt_connected_flag = 0;
 
@@ -395,7 +395,135 @@ int MQTT_publish(float temperature, float humidity ,float press) {
     mqtt_publish_data(temperature, humidity ,press);
     return 0;
 }
+// ====================== MQTT 上报：轮询所有设备 ======================
+int mqtt_publish_data1(void)
+{
+    if (!g_mosq) {
+        LOG_ERROR("MQTT客户端未初始化");
+        return -1;
+    }
 
+    char payload[MAX_PAYLOAD_SIZE];
+    int offset = 0;
+    int first_prop = 1;
+
+    // 构造 JSON 开头
+    offset += snprintf(payload + offset, sizeof(payload) - offset,
+                       "{\"services\":[{\"service_id\":\"%s\",\"properties\":{",
+                       cfg.service_id);
+
+    // ===== 1. 轮询所有 RTU 设备 =====
+    for (int i = 0; i < mgr.rtu_device_count; i++) {
+        rtu_device_t *dev = &mgr.rtu_devices[i];
+        
+       pthread_mutex_lock(&mgr.data_mutex);
+        
+        // 遍历该设备的 regs 数组（假设读了多少个寄存器就遍历多少个）
+        for (int j = 0; j < dev->read_count && j < 8; j++) {
+            // ★★★ 属性名：Modbus_RTU_X_DATAj ★★★
+            if (!first_prop) {
+                offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
+            }
+            offset += snprintf(payload + offset, sizeof(payload) - offset,
+                               "\"Modbus_RTU_%d_DATA%d\":%d",
+                               i, j, dev->regs[j]);
+                               printf("\"获取拼接数据:Modbus_RTU_%d_DATA%d\":%d\n", i, j, dev->regs[j]);
+            first_prop = 0;
+        }
+        
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+
+    // ===== 2. 轮询所有 TCP 设备 =====
+    for (int i = 0; i < mgr.tcp_device_count; i++) {
+        tcp_device_config_t *dev = &mgr.tcp_devices[i];
+        
+        pthread_mutex_lock(&mgr.data_mutex);
+        
+        // 遍历该设备的 regs 数组（假设读了 10 个寄存器，但只取前 8 个作为示例）
+        for (int j = 0; j < 2 && j < 8; j++) {
+            if (!first_prop) {
+                offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
+            }
+            offset += snprintf(payload + offset, sizeof(payload) - offset,
+                               "\"Modbus_TCP_%d_DATA%d\":%d",
+                               i, j, dev->regs[j]);
+                                printf("\"获取拼接数据:Modbus_TCP_%d_DATA%d\":%d\n", i, j, dev->regs[j]);
+            first_prop = 0;
+        }
+        
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+
+    // // ===== 3. 可选：加上大气压（只报一个） =====
+    // if (!first_prop) {
+    //     offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
+    // }
+    // offset += snprintf(payload + offset, sizeof(payload) - offset,
+    //                    "\"press\":%.1f", mgr.press);
+
+    // 构造 JSON 结尾
+    offset += snprintf(payload + offset, sizeof(payload) - offset,
+                       "}}]}");
+
+    // ===== 4. 发送 =====
+   int ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic,
+                                strlen(payload), payload, 1, false);
+    if (ret != MOSQ_ERR_SUCCESS) {
+        LOG_ERROR("MQTT发布失败，错误码: %d，数据存入本地缓存", ret);
+        // ★ 发布失败时，把完整JSON存入缓存
+        data_cache_push_telemetry_json(payload);
+        return -1;
+    }
+
+    LOG_INFO("MQTT上报成功");
+    return 0;
+}
+void build_current_json(char *payload, int payload_size)
+{
+    int offset = 0;
+    int first_prop = 1;
+
+    // 构造 JSON 开头
+    offset += snprintf(payload + offset, payload_size - offset,
+                       "{\"services\":[{\"service_id\":\"%s\",\"properties\":{",
+                       cfg.service_id);
+
+    // ===== 1. 轮询所有 RTU 设备 =====
+    for (int i = 0; i < mgr.rtu_device_count; i++) {
+        rtu_device_t *dev = &mgr.rtu_devices[i];
+        pthread_mutex_lock(&mgr.data_mutex);
+        for (int j = 0; j < dev->read_count && j < 8; j++) {
+            if (!first_prop) {
+                offset += snprintf(payload + offset, payload_size - offset, ",");
+            }
+            offset += snprintf(payload + offset, payload_size - offset,
+                               "\"Modbus_RTU_%d_DATA%d\":%d",
+                               i, j, dev->regs[j]);
+            first_prop = 0;
+        }
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+
+    // ===== 2. 轮询所有 TCP 设备 =====
+    for (int i = 0; i < mgr.tcp_device_count; i++) {
+        tcp_device_config_t *dev = &mgr.tcp_devices[i];
+        pthread_mutex_lock(&mgr.data_mutex);
+        for (int j = 0; j < 2 && j < 8; j++) {
+            if (!first_prop) {
+                offset += snprintf(payload + offset, payload_size - offset, ",");
+            }
+            offset += snprintf(payload + offset, payload_size - offset,
+                               "\"Modbus_TCP_%d_DATA%d\":%d",
+                               i, j, dev->regs[j]);
+            first_prop = 0;
+        }
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+
+    // 构造 JSON 结尾
+    offset += snprintf(payload + offset, payload_size - offset, "}}]}");
+}
 // ====================== 判断MQTT是否在线 ======================
 int mqtt_is_connected(void)
 {

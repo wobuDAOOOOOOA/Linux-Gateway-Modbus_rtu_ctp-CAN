@@ -135,6 +135,7 @@ void *modbus_tcp_read_generic(void *arg)
     free(arg);
 
     tcp_device_config_t *dev = &mgr.tcp_devices[idx];
+    uint32_t can_id = CAN_ID_BASE_TCP + idx;  // RTU设备0→0x100, 设备1→0x101
 
     // 初始化采集状态
     dev->collect_enable = 1;
@@ -207,7 +208,7 @@ void *modbus_tcp_read_generic(void *arg)
 
         // 发送到 CAN 总线
         pthread_mutex_lock(&mgr.bus_mutex);
-        if (can_send(0x123, 2, dev->regs) != 0) {
+        if (can_send(can_id, 2, dev->regs) != 0) {
             LOG_WARN("TCP:CAN数据发送失败");
         }
         pthread_mutex_unlock(&mgr.bus_mutex);
@@ -350,6 +351,7 @@ void *can_receive_pthread(void *arg) {
                 }
             }
         }
+       // sleep(1);
     }
     return NULL;
 }
@@ -360,6 +362,7 @@ void *MQTT_pthread(void *arg) {
     int last_rtu_status = -1, last_tcp_status = -1;
     int last_can_fault = -1;
     int last_can_reconnect_count = -1;  // ★★★ 新增：记录上次重连次数 ★★★
+char json_buf[1024];
 
 
     // 记录上一次采集状态，用于去重日志
@@ -368,17 +371,16 @@ void *MQTT_pthread(void *arg) {
         mgr.press = BMP280_READ();
         mgr.mqtt_connect_states = mqtt_is_connected();
 
-        if (mgr.mqtt_connect_states) {
-            data_cache_flush();
-            pthread_mutex_lock(&mgr.data_mutex);
-            MQTT_publish(mgr.latest_temperature, mgr.latest_humidity, mgr.press);
-          pthread_mutex_unlock(&mgr.data_mutex);
-        } else {
-            data_cache_push_telemetry(mgr.latest_temperature, mgr.latest_humidity, mgr.press);
-         //   data_cache_push_alarm_rtu("RTU",);
-            //data_cache_push_alarm_rtu("RTU",); //本地缓冲和上报还没适配好
-            printf("【缓存】MQTT离线，数据已缓存\n");
-        }
+build_current_json(json_buf, sizeof(json_buf));
+
+if (mgr.mqtt_connect_states) {
+    data_cache_flush();
+    mqtt_publish_data1();
+} else {
+    build_current_json(json_buf, sizeof(json_buf));
+    data_cache_push_telemetry_json(json_buf);
+    printf("【缓存】MQTT离线，数据已缓存\n");
+}
 
    // ===== RTU 设备状态上报 =====
         for (int i = 0; i < mgr.rtu_device_count; i++) {

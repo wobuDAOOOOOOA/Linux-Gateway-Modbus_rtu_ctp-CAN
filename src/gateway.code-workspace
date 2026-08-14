@@ -7,7 +7,5 @@
 			"path": "../.."
 		}
 	],
-	"settings": {
-		"git.ignoreLimitWarning": true
-	}
+	"settings": {}
 }

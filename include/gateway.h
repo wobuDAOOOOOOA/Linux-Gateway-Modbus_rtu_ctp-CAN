@@ -31,7 +31,7 @@ typedef struct {
     char alarm_msg[128];
     time_t tcp_fail_time;
     int collect_enable;
-    int last_collect_state
+    int last_collect_state;
     
 } tcp_device_config_t;
 // gateway.h
@@ -57,7 +57,11 @@ typedef struct {
 
     char name[32];               // 设备名称
 } rtu_device_t;
-
+typedef enum {
+    MQTT_DISCONNECTED, // 断开状态
+    MQTT_CONNECTED ,      // 连接状态（正常上报）
+    MQTT_FLUSHING ,        // 补传状态（正在补传历史数据）
+} mqtt_state_t;
 
 typedef struct {
     // 线程句柄
@@ -107,6 +111,11 @@ typedef struct {
  
     tcp_device_config_t tcp_devices[MAX_TCP_DEVICES];
     int tcp_device_count;
+   
+
+
+    mqtt_state_t mqtt_state;   // 用枚举类型声明一个变量
+
 
 } gateway_manager_t;
 

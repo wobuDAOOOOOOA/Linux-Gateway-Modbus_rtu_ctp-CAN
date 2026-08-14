@@ -10,7 +10,8 @@
 
 // 华为云下行命令订阅主题
 #define MQTT_SUB_CMD_TOPIC  "$oc/devices/+/sys/command/#"
-
+// mqtt_huawei.h 或 config.h 中定义
+#define MAX_PAYLOAD_SIZE  2048  // JSON 负载最大长度
 // 物模型上报字段
 //#define SERVICE_ID      "Telemetry"
 //#define PROP_TEMP       "temperature"
@@ -18,7 +19,7 @@
 //#define PROP_PRESS      "press"
 #define PAYLOAD_TEMPLATE "{\"services\":[{\"service_id\":\"%s\",\"properties\":{\"%s\":%.1f,\"%s\":%.1f,\"%s\":%.1f}}]}"
 
-
+extern struct mosquitto *g_mosq;
 
 // 基础MQTT接口
 int mqtt_Init(void);
@@ -26,6 +27,9 @@ int mqtt_publish_data(float temperature, float humidity , float press);
 void mqtt_disconnect_and_cleanup(void);
 
 int MQTT_publish(float temperature, float humidity, float press);
+int mqtt_publish_data1(void);
+void build_current_json(char *payload, int payload_size);
+
 //int mqtt_publish_TCP_alarm(const char *Modbus_TCP_alarm_type, const char *Modbus_TCP_alarm_module, const char *Modbus_TCP_alarm_msg);
 //int mqtt_publish_RTU_alarm(const char *Modbus_RTU_alarm_type, const char *Modbus_RTU_alarm_module, const char *Modbus_RTU_alarm_msg);
 int mqtt_publish_CAN_alarm(const char *CAN_alarm_type, const char *CAN_alarm_module, const char *CAN_alarm_msg);

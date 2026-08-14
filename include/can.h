@@ -19,6 +19,7 @@ void can_cleanup(void);
 
 
  void handle_rtu_frame(uint32_t can_id, struct can_frame *frame);
+ void handle_tcp_frame(uint32_t can_id, struct can_frame *frame);
 
 // ★★★ 获取当前CAN状态（供MQTT线程调用） ★★★
 void can_get_status(can_status_t *status);
@@ -33,11 +34,13 @@ typedef struct {
 /// @brief ////////
 static const can_route_entry_t route_table[] = {
     {CAN_ID_BASE_RTU,   CAN_ID_BASE_RTU + MAX_RTU_DEVICES,   handle_rtu_frame},
+    {CAN_ID_BASE_TCP,   CAN_ID_BASE_TCP + MAX_TCP_DEVICES,   handle_tcp_frame},
+
  
 };
 #define ROUTE_TABLE_SIZE (sizeof(route_table) / sizeof(route_table[0]))
 #define CAN_MAX_RETRY     3
 #define CAN_BASE_DELAY    5
-#define CAN_ALARM_INTERVAL 30
+//#define CAN_ALARM_INTERVAL 30
 
 #endif

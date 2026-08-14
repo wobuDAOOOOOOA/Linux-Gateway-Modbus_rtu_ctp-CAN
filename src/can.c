@@ -39,13 +39,25 @@ static can_status_t g_can_status = {0};
         pthread_mutex_lock(&mgr.data_mutex);
         for (int i = 0; i < frame->can_dlc && i < 8; i++) {
             mgr.rtu_devices[dev_idx].regs[i] = frame->data[i];
-                                printf("RTU设备{%d} 存入数值：%d\n",dev_idx,mgr.rtu_devices[dev_idx].regs[i]);
+            printf("RTU设备{%d} 存入数值：%d\n",dev_idx,mgr.rtu_devices[dev_idx].regs[i]);
                             
         }
         pthread_mutex_unlock(&mgr.data_mutex);
     }
 }
+ void handle_tcp_frame(uint32_t can_id, struct can_frame *frame)
+{
+    int dev_idx = can_id - CAN_ID_BASE_TCP;
+    if (dev_idx >= 0 && dev_idx < mgr.tcp_device_count) {
+        pthread_mutex_lock(&mgr.data_mutex);
+        for (int i = 0; i < frame->can_dlc && i < 8; i++) {
+            mgr.tcp_devices[dev_idx].regs[i] = frame->data[i];
+        printf("TCP设备{%d} 存入数值：%d\n",dev_idx,mgr.tcp_devices[dev_idx].regs[i]);
 
+        }
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+}
 
 
 

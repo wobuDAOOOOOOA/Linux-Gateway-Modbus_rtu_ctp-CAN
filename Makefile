@@ -24,8 +24,8 @@ SRCS = $(SRC_DIR)/main.c \
 TARGET = gateway
 
 # 编译选项
-CFLAGS = -Wall -g -O0 -I$(INC_DIR) -I/home/wdz/libmodbus_arm/include -I/home/wdz/mosquitto-2.0.18/include
-LDFLAGS = -L$(LIB_DIR) -L$(MOSQ_DIR) -lmodbus -lmosquitto -lpthread
+CFLAGS = -Wall -g -O0 -I$(INC_DIR) -I/home/wdz/libmodbus_arm/include -I/home/wdz/mosquitto-2.0.18/include  -I/home/wdz/sqlite_arm/include
+LDFLAGS = -L$(LIB_DIR) -L$(MOSQ_DIR) -lmodbus -lmosquitto -lpthread -L/home/wdz/sqlite_arm/lib -lsqlite3
 
 all: $(TARGET)
 
