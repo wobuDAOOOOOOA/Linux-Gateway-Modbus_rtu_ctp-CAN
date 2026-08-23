@@ -468,7 +468,7 @@ int mqtt_publish_data1(void)
 
     // ===== 4. 发送 =====
    int ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic,
-                                strlen(payload), payload, 1, false);
+                                strlen(payload), payload, 0, false);
     if (ret != MOSQ_ERR_SUCCESS) {
         LOG_ERROR("MQTT发布失败，错误码: %d，数据存入本地缓存", ret);
         // ★ 发布失败时，把完整JSON存入缓存

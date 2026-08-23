@@ -6,6 +6,7 @@
 #include <time.h>
 #include <linux/can.h>
 #include <sys/socket.h>
+#include <signal.h>
 #include"gateway.h"
 #include"modbus_tcp.h"
 #include"modbus_rtu.h"
@@ -16,7 +17,7 @@
 #include"relay.h"  //下发测试modbus_tcp继电器模块
 #include"bmp280.h" //bmp280 测试用，轮询在mqtt线程，删掉不影响
 #include"data_cache.h" //本地环形缓冲区缓存 //掉电丢失数据
-#define ture 1
+#define true 1
 
   // 全局唯一实体定义（全工程仅此一处）
  gateway_manager_t mgr;
@@ -31,7 +32,7 @@ static void gateway_manager_init(gateway_manager_t *mgr)
    // pthread_mutex_init(&mgr->read_mutex, NULL);
 
        // 开启运行开关
-    mgr->running = ture;
+    mgr->running = true;
     // mgr->rtu_collect_enable=1;
     // mgr->tcp_collect_enable=1;
     // 初始化默认寄存器数据
@@ -39,7 +40,16 @@ static void gateway_manager_init(gateway_manager_t *mgr)
     // mgr->regs[1] = 2;
 }
 // ====================== 退出清理函数 ======================
-
+void signal_handler(int sig) {
+    printf("收到信号 %d，准备退出\n", sig);
+    mgr.running = 0;  // 让所有线程退出
+}
+void sigusr1_handler(int sig)
+{
+    printf("收到SIGHUP，重新加载配置\n");
+    config_load("./gateway.conf", &cfg);
+    reconfig_hot();
+}
 void gateway_cleanup(void)
 {
     LOG_INFO("执行网关全资源释放...");
@@ -74,6 +84,7 @@ void init_tcp_devices(void)
 {
     // 1. 先把整个数组清空（防止残留垃圾数据）
     //    相当于：把 tcp_devices[0] ~ tcp_devices[3] 全部置零
+    printf("config以及赋值给了所有");
     memset(mgr.tcp_devices, 0, sizeof(mgr.tcp_devices));
    
     // 2. 从配置文件 cfg 里读取数据，填充数组
@@ -88,9 +99,10 @@ void init_tcp_devices(void)
 
         
         // tcp_devices[count] 就是第 count 个设备
-        // 用 & 取地址，用 -> 访问结构体成员
+        // 用 & 取地址，用 -> 访问结构体成员    
+        //结构体指针指向结构体数组没毛病
         tcp_device_config_t *dev = &mgr.tcp_devices[count];
-
+     //  mgr.tcp_devices[0].port = 0;手贱改这里导致的TCP第一从站连不上
         // 3. 把配置拷贝到数组元素里
         strcpy(dev->ip, cfg.tcp_ip[i]);
         dev->port = cfg.tcp_port[i];
@@ -129,6 +141,7 @@ void init_rtu_devices(void)
 
     mgr.rtu_device_count = count;
 }
+
 void *modbus_tcp_read_generic(void *arg)
 {
     int idx = *(int *)arg;
@@ -394,6 +407,9 @@ if (mgr.mqtt_connect_states) {
                     mqtt_publish_alarm("RTU", i, "offline", "RTU", dev->alarm_msg);
                 }
                 dev->last_reported_status = dev->status;
+                if (mgr.mqtt_connect_states){
+                   // data_cache_push_alarm_rtu();
+                }
             }
         }
 
@@ -411,7 +427,8 @@ for (int i = 0; i < mgr.tcp_device_count; i++) {
         }
         dev->last_reported_status = dev->status;
     }
-}
+ 
+}  
         // ===== ★★★ CAN 状态上报（修正版） ★★★ =====
         can_status_t can_status;
         can_get_status(&can_status);
@@ -434,10 +451,34 @@ for (int i = 0; i < mgr.tcp_device_count; i++) {
     }
     return NULL;
 }
+void reconfig_hot(void)
+{
+       init_tcp_devices();
+    init_rtu_devices();
+// 动态创建 RTU 线程
+for (int i = 0; i < mgr.rtu_device_count; i++) {
+    rtu_device_t  *dev = &mgr.rtu_devices[i];
+        LOG_INFO("主程序:启动RTU设备 %s (%D:%d)", dev->port, dev->slave_id, dev->baudrate);
 
+    int *idx_ptr = malloc(sizeof(int));
+    *idx_ptr = i;
+    pthread_create(&mgr.threads[10 + i], NULL, modbus_rtu_read_generic, idx_ptr);
+}// ===== 动态创建 TCP 设备采集线程 =====
+
+for (int i = 0; i < mgr.tcp_device_count; i++) {
+    tcp_device_config_t *dev = &mgr.tcp_devices[i];
+    LOG_INFO("主程序:启动TCP设备 %s (%s:%d)", dev->ip, dev->ip, dev->port);
+    
+    // 每个线程传入设备索引，线程内部根据索引找到对应的设备
+    int *idx_ptr = malloc(sizeof(int));
+    *idx_ptr = i;
+    pthread_create(&mgr.threads[2 + i], NULL, modbus_tcp_read_generic, idx_ptr);
+}  
+}
 // ====================== 主函数 ======================
 int main(void) {
-
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     // rtu初始化随机种子
     srand((unsigned)time(NULL));
     // 注册全局清理
@@ -449,7 +490,7 @@ int main(void) {
     config_load("./gateway.conf", &cfg);
     printf("Modbus port: %s\n", cfg.modbus_port);
     printf("can port: %s\n", cfg.can_interface);
-
+    
     // 底层外设初始化
     mqtt_Init();
     can_Init();
@@ -459,7 +500,7 @@ int main(void) {
     init_tcp_devices();
     init_rtu_devices();
 
-
+    signal(SIGHUP, sigusr1_handler);
 // 动态创建 RTU 线程
 for (int i = 0; i < mgr.rtu_device_count; i++) {
     rtu_device_t  *dev = &mgr.rtu_devices[i];
@@ -484,9 +525,11 @@ for (int i = 0; i < mgr.tcp_device_count; i++) {
     pthread_create(&mgr.threads[0], NULL, MQTT_pthread, &mgr);
 
     // 主线程循环
-    while(1)
+    while(mgr.running)
     {
         LOG_DEBUG("主线程运行中...");
         sleep(1);
     }
+       return 0;  // 走到这里，atexit执行清理
+
 }

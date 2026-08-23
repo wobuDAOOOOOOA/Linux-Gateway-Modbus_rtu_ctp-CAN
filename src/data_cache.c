@@ -122,25 +122,25 @@ void data_cache_init(void)
     printf("【缓存】SQLite缓存初始化完成，最大容量: %d\n", g_cache.max_records);
 }
 
-int data_cache_push_telemetry(float temp, float humi, float press)
-{
-    data_record_t rec;
-    memset(&rec, 0, sizeof(rec));
+// int data_cache_push_telemetry(float temp, float humi, float press)
+// {
+//     data_record_t rec;
+//     memset(&rec, 0, sizeof(rec));
 
-    rec.type = CACHE_TYPE_TELEMETRY;
-    rec.timestamp = time(NULL);
-    rec.temperature = temp;
-    rec.humidity = humi;
-    rec.pressure = press;
+//     rec.type = CACHE_TYPE_TELEMETRY;
+//     rec.timestamp = time(NULL);
+//     rec.temperature = temp;
+//     rec.humidity = humi;
+//     rec.pressure = press;
 
-    pthread_mutex_lock(&g_cache_mutex);
-    db_insert_record(g_cache.db, &rec);
-    db_trim_oldest(g_cache.db, g_cache.max_records);
-    pthread_mutex_unlock(&g_cache_mutex);
+//     pthread_mutex_lock(&g_cache_mutex);
+//     db_insert_record(g_cache.db, &rec);
+//     db_trim_oldest(g_cache.db, g_cache.max_records);
+//     pthread_mutex_unlock(&g_cache_mutex);
 
-    printf("【缓存】遥测数据已入库，当前缓存: %d\n", db_get_count(g_cache.db));
-    return 0;
-}
+//     printf("【缓存】遥测数据已入库，当前缓存: %d\n", db_get_count(g_cache.db));
+//     return 0;
+// }
 
 int data_cache_push_telemetry_json(const char *json_payload)
 {
@@ -160,7 +160,7 @@ int data_cache_push_telemetry_json(const char *json_payload)
     return 0;
 }
 
-int data_cache_push_alarm_rtu(const char *type, const char *module, const char *msg)
+int data_cache_push_alarm_rtu(const char *type, const int device_ptr, const char *module, const char *msg)
 {
     data_record_t rec;
     memset(&rec, 0, sizeof(rec));

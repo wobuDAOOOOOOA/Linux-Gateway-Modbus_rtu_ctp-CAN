@@ -32,9 +32,9 @@ typedef struct {
 } data_cache_t;
 
 void data_cache_init(void);
-int data_cache_push_telemetry(float temp, float humi, float press);
+//int data_cache_push_telemetry(float temp, float humi, float press);
 int data_cache_push_telemetry_json(const char *json_payload);
-int data_cache_push_alarm_rtu(const char *type, const char *module, const char *msg);
+int data_cache_push_alarm_rtu(const char *type, const int device_ptr, const char *module, const char *msg);
 int data_cache_push_alarm_tcp(const char *type, const char *module, const char *msg);
 void data_cache_flush(void);
 int data_cache_get_count(void);
