@@ -146,7 +146,7 @@ void *modbus_tcp_read_generic(void *arg)
 {
     int idx = *(int *)arg;
     free(arg);
-
+    uint16_t regs[32];
     tcp_device_config_t *dev = &mgr.tcp_devices[idx];
     uint32_t can_id = CAN_ID_BASE_TCP + idx;  // RTU设备0→0x100, 设备1→0x101
 
@@ -191,7 +191,7 @@ void *modbus_tcp_read_generic(void *arg)
         // ===== 执行采集 =====
         printf("IP=%s, 端口=%d, 从站=%d\n", dev->ip, dev->port, dev->slave_id);
 
-        if (modbus_tcp_device_read(dev, &dev->ctx, 0, 10, dev->regs) == -1) {
+        if (modbus_tcp_device_read(dev, &dev->ctx, 0, 10, regs) == -1) {
             LOG_ERROR("TCP设备%d: 所有热重试失败，60s冷休眠后重试", idx);
             // ★★★ 只有在之前不是故障状态时才更新故障信息 ★★★
             if (dev->status != 2) {
@@ -216,12 +216,12 @@ void *modbus_tcp_read_generic(void *arg)
 
         // 打印采集数据
         for (int i = 0; i < 2; i++) {
-            LOG_INFO("TCP_REG[%d] = %d", i, dev->regs[i]);
+            LOG_INFO("TCP_REG[%d] = %d", i, regs[i]);
         }
 
         // 发送到 CAN 总线
         pthread_mutex_lock(&mgr.bus_mutex);
-        if (can_send(can_id, 2, dev->regs) != 0) {
+        if (can_send(can_id, 2, regs) != 0) {
             LOG_WARN("TCP:CAN数据发送失败");
         }
         pthread_mutex_unlock(&mgr.bus_mutex);
@@ -238,6 +238,7 @@ void *modbus_rtu_read_generic(void *arg)
 {
     int idx = *(int *)arg;
     free(arg);
+    uint16_t regs[32];
 
     rtu_device_t *dev = &mgr.rtu_devices[idx];
 //   // ===== 直接硬编码赋值所有成员（测试用） =====
@@ -298,7 +299,7 @@ void *modbus_rtu_read_generic(void *arg)
         printf("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d\n",
                idx, dev->port, dev->baudrate, dev->slave_id);
 
-        if (modbus_rtu_device_read(dev, 0, 2, dev->regs) == -1) {
+        if (modbus_rtu_device_read(dev, 0, 2, regs) == -1) {
             LOG_ERROR("RTU设备%d: 所有热重试失败，60s冷休眠后重试", idx);
             if (dev->status != 2) {
                 dev->status = 2;
@@ -322,12 +323,12 @@ void *modbus_rtu_read_generic(void *arg)
 
         // 打印采集数据
         for (int i = 0; i < 2; i++) {
-            LOG_INFO("RTU_DATA[%d] = %d .从站地址：%d", i, dev->regs[i],dev->slave_id);
+            LOG_INFO("RTU_DATA[%d] = %d .从站地址：%d", i, regs[i],dev->slave_id);
         }
 
         // 发送到 CAN 总线
         pthread_mutex_lock(&mgr.bus_mutex);
-        if (can_send(can_id, 2, dev->regs) != 0) {
+        if (can_send(can_id, 2, regs) != 0) {
             LOG_WARN("RTU设备%d: CAN数据发送失败", idx);
         }
         pthread_mutex_unlock(&mgr.bus_mutex);

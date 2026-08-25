@@ -18,11 +18,10 @@
 - **工程化**：配置文件外置、日志分级、Makefile分离debug/release
 
 ## 架构图
-
-![alt text](docs/架构图.png)
+![alt text](docs/框架图.png)
 
 ## 如何编译与运行
-
+ 
 1. 安装依赖
 
 ```bash
@@ -38,7 +37,7 @@ cd libmodbus-3.1.10
 ./configure --host=arm-rockchip830-linux-uclibcgnueabihf --prefix=/home/XXX/libmodbus_arm
 make
 make install
-产物：/home/XXX/libmodbus_arm/lib/libmodbus.so* 和 /home/XXX/libmodbus_arm/include/modbus/modbus.h
+产物：/home/XXX/libmodbus_arm/lib/libmodbus.so.5.1.0
 
 
 二、libmosquitto 交叉编译:
@@ -48,8 +47,13 @@ wget https://github.com/eclipse/mosquitto/archive/refs/tags/v2.0.18.tar.gz
 tar -xzf v2.0.18.tar.gz
 cd mosquitto-2.0.18
 
-make CC=gcc CXX=g++ CROSS_COMPILE=arm-rockchip830-linux-uclibcgnueabihf- WITH_TLS=no WITH_CJSON=no WITH_SHARED_LIBRARIES=yes
-产物：/home/wdz/mosquitto-2.0.18/lib/libmosquitto.so.1
+make CC=arm-rockchip830-linux-uclibcgnueabihf-gcc \
+     CXX=arm-rockchip830-linux-uclibcgnueabihf-g++ \
+     CROSS_COMPILE=arm-rockchip830-linux-uclibcgnueabihf- \
+     WITH_TLS=no \
+     WITH_CJSON=no \
+     WITH_SHARED_LIBRARIES=yes
+产物：/home/XXX/mosquitto-2.0.18/lib/libmosquitto.so.1
 
 如果链接报错找不到libmosquitto.so，手动创建符号链接：
 cd /home/XXX/mosquitto-2.0.18/lib
@@ -64,17 +68,27 @@ git clone https://github.com/linux-can/can-utils.git
 cd can-utils
 make CC=arm-rockchip830-linux-uclibcgnueabihf-gcc
 
+产物：
+/home/XXX/can-utils/candump
+/home/XXX/can-utils/cansend
+/home/XXX/can-utils/cansniffer
+
+
 
 四、SQLite 交叉编译
 
 cd /home/XXX
-wget https://github.com/eclipse/mosquitto/archive/refs/tags/v2.0.18.tar.gz
-tar -xzf v2.0.18.tar.gz
-cd mosquitto-2.0.18
+wget https://www.sqlite.org/2023/sqlite-autoconf-3440200.tar.gz
+tar -xzf sqlite-autoconf-3440200.tar.gz
+cd sqlite-autoconf-3440200
 
-make CC=gcc CXX=g++ CROSS_COMPILE=arm-rockchip830-linux-uclibcgnueabihf- WITH_TLS=no WITH_CJSON=no WITH_SHARED_LIBRARIES=yes
-产物：libsqlite3.so
+./configure --host=arm-rockchip830-linux-uclibcgnueabihf --prefix=/home/XXX/sqlite_arm
+make
+make install
 
+产物：/home/XXX/sqlite_arm/lib/libsqlite3.so
+
+五、安装Modbus rtu/tcp模拟从站  https://github.com/sanny32/OpenModSim
 
 2. 创建VCAN
 
@@ -122,11 +136,11 @@ sudo ./gateway_debug
 
 ## 目录结构
 
-```
-├── docs/          #一些基础文档
-├── src/           # 源代码
-├── include/       # 头文件
-├── modbus_tcp_slave/ #tcp虚拟从站  ps现在不用这玩意了，用开源软件open Modsim 2 
+``` 
+├── docs/                  #一些基础文档
+├── src/                   # 源代码
+├── include/               # 头文件
+├── modbus_tcp_slave/      #tcp虚拟从站  ps现在不用这玩意了，用开源软件open Modsim 2 
 ├── Makefile
 ├── README.md
 ├── test/        #mqtt连接华为云测试 can测试 tcp服务端和客户端测试（学习用） frok测试（学习用）
