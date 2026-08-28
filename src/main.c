@@ -7,54 +7,62 @@
 #include <linux/can.h>
 #include <sys/socket.h>
 #include <signal.h>
-#include"gateway.h"
-#include"modbus_tcp.h"
-#include"modbus_rtu.h"
-#include"can.h"          
-#include"mqtt_huawei.h" 
-#include"log.h"      //日志分级
-#include"config.h"  //配置文件外置
-#include"relay.h"  //下发测试modbus_tcp继电器模块
-#include"bmp280.h" //bmp280 测试用，轮询在mqtt线程，删掉不影响
-#include"data_cache.h" //本地环形缓冲区缓存 //掉电丢失数据
+#include "gateway.h"
+#include "modbus_tcp.h"
+#include "modbus_rtu.h"
+#include "can.h"
+#include "mqtt_huawei.h"
+#include "log.h"
+#include "config.h"
+#include "relay.h"
+#include "bmp280.h"
+#include "data_cache.h"
+
 #define true 1
 
-  // 全局唯一实体定义（全工程仅此一处）
- gateway_manager_t mgr;
+// 全局变量定义
+gateway_manager_t mgr;
+volatile sig_atomic_t g_config_reload_flag = 0;
+// 工具函数
+static int cold_sleep_with_check(int seconds)
+{
+    for (int i = 0; i < seconds; i++) {
+        if (mgr.collect_stop) {
+            return -1;   // 被热加载中断
+        }
+        sleep(1);
+    }
+    return 0;
+}
 // ====================== 资源初始化函数 ======================
 static void gateway_manager_init(gateway_manager_t *mgr)
 {
     memset(mgr, 0, sizeof(gateway_manager_t));
 
-    // 初始化锁
     pthread_mutex_init(&mgr->data_mutex, NULL);
     pthread_mutex_init(&mgr->bus_mutex, NULL);
-   // pthread_mutex_init(&mgr->read_mutex, NULL);
+    pthread_rwlock_init(&mgr->config_lock, NULL);
 
-       // 开启运行开关
     mgr->running = true;
-    // mgr->rtu_collect_enable=1;
-    // mgr->tcp_collect_enable=1;
-    // 初始化默认寄存器数据
-    // mgr->regs[0] = 1;
-    // mgr->regs[1] = 2;
+    mgr->collect_stop = 0;      // ★ 0=采集运行中
 }
+
 // ====================== 退出清理函数 ======================
 void signal_handler(int sig) {
     printf("收到信号 %d，准备退出\n", sig);
-    mgr.running = 0;  // 让所有线程退出
+    mgr.running = 0;            // 让所有线程退出
 }
+
 void sigusr1_handler(int sig)
 {
     printf("收到SIGHUP，重新加载配置\n");
-    config_load("./gateway.conf", &cfg);
-    reconfig_hot();
+    g_config_reload_flag = 1;   // ★ 只设标志位
 }
+
 void gateway_cleanup(void)
 {
     LOG_INFO("执行网关全资源释放...");
 
-    // ===== 1. 释放所有 TCP 设备资源 =====
     for (int i = 0; i < mgr.tcp_device_count; i++) {
         if (mgr.tcp_devices[i].ctx != NULL) {
             modbus_close(mgr.tcp_devices[i].ctx);
@@ -64,7 +72,6 @@ void gateway_cleanup(void)
         }
     }
 
-    // ===== 2. 释放所有 RTU 设备资源 =====
     for (int i = 0; i < mgr.rtu_device_count; i++) {
         if (mgr.rtu_devices[i].ctx != NULL) {
             modbus_close(mgr.rtu_devices[i].ctx);
@@ -74,53 +81,37 @@ void gateway_cleanup(void)
         }
     }
 
-    // ===== 3. 销毁互斥锁 =====
     pthread_mutex_destroy(&mgr.data_mutex);
     pthread_mutex_destroy(&mgr.bus_mutex);
+    pthread_rwlock_destroy(&mgr.config_lock);
 
     LOG_INFO("所有资源释放完成！");
 }
+
 void init_tcp_devices(void)
 {
-    // 1. 先把整个数组清空（防止残留垃圾数据）
-    //    相当于：把 tcp_devices[0] ~ tcp_devices[3] 全部置零
     printf("config以及赋值给了所有");
-    memset(mgr.tcp_devices, 0, sizeof(mgr.tcp_devices));
-   
-    // 2. 从配置文件 cfg 里读取数据，填充数组
-    //    比如你配置了 tcp_enable[0]=1, tcp_ip[0]="192.168.1.100" ...
+    //memset(mgr.tcp_devices, 0, sizeof(mgr.tcp_devices));
+
     int count = 0;
-
     for (int i = 0; i < MAX_TCP_DEVICES; i++) {
-        // 如果配置里这个设备是禁用状态，就跳过
-        if (cfg.tcp_enable[i] == 0) {
-            continue;
-        }
+        if (cfg.tcp_enable[i] == 0) continue;
 
-        
-        // tcp_devices[count] 就是第 count 个设备
-        // 用 & 取地址，用 -> 访问结构体成员    
-        //结构体指针指向结构体数组没毛病
         tcp_device_config_t *dev = &mgr.tcp_devices[count];
-     //  mgr.tcp_devices[0].port = 0;手贱改这里导致的TCP第一从站连不上
-        // 3. 把配置拷贝到数组元素里
         strcpy(dev->ip, cfg.tcp_ip[i]);
         dev->port = cfg.tcp_port[i];
         dev->slave_id = cfg.tcp_slave_id[i];
         dev->timeout_ms = 500;
-        dev->ctx = NULL;      // 连接句柄先设为空，读函数会自动创建
+        dev->ctx = NULL;
 
-        // 4. 计数加1，指向下一个数组位置
         count++;
     }
-
-    // 5. 记录实际启用的设备数量
     mgr.tcp_device_count = count;
 }
-// main.c - 新增初始化函数
+
 void init_rtu_devices(void)
 {
-    memset(mgr.rtu_devices, 0, sizeof(mgr.rtu_devices));
+    //memset(mgr.rtu_devices, 0, sizeof(mgr.rtu_devices));
     int count = 0;
 
     for (int i = 0; i < MAX_RTU_DEVICES; i++) {
@@ -138,49 +129,70 @@ void init_rtu_devices(void)
 
         count++;
     }
-
     mgr.rtu_device_count = count;
 }
 
+// ====================== TCP 采集线程（含局部变量优化） ======================
 void *modbus_tcp_read_generic(void *arg)
 {
     int idx = *(int *)arg;
     free(arg);
-    uint16_t regs[32];
+
+    // ★ 局部变量：存放从配置复制出来的值
+    char local_ip[32];
+    int local_port;
+    int local_slave_id;
+    uint32_t can_id = CAN_ID_BASE_TCP + idx;
+
+    // ★ 首次读取配置（读锁保护）
+    pthread_rwlock_rdlock(&mgr.config_lock);
     tcp_device_config_t *dev = &mgr.tcp_devices[idx];
-    uint32_t can_id = CAN_ID_BASE_TCP + idx;  // RTU设备0→0x100, 设备1→0x101
-
-    // 初始化采集状态
+    strcpy(local_ip, dev->ip);
+    local_port = dev->port;
+    local_slave_id = dev->slave_id;
     dev->collect_enable = 1;
-    dev->last_collect_state = 1;  // 初始为开启
+    dev->last_collect_state = 1;
+    pthread_rwlock_unlock(&mgr.config_lock);
 
-    while (mgr.running) {
-        // ===== 采集开关状态变化检测 =====
+    uint16_t regs[32];
+    modbus_t *ctx = NULL;
+    int reload_counter = 0;
+
+    // ★ while 条件改成 !collect_stop
+    while (!mgr.collect_stop) {
+        // ★ 每10次循环重读配置（热加载生效）
+        reload_counter++;
+        if (reload_counter >= 10) {
+            reload_counter = 0;
+            pthread_rwlock_rdlock(&mgr.config_lock);
+            tcp_device_config_t *dev_reload = &mgr.tcp_devices[idx];
+            strcpy(local_ip, dev_reload->ip);
+            local_port = dev_reload->port;
+            local_slave_id = dev_reload->slave_id;
+            pthread_rwlock_unlock(&mgr.config_lock);
+            LOG_DEBUG("TCP设备%d: 重新读取配置", idx);
+        }
+
+        // ===== 采集开关状态变化检测（运行时状态，不需要锁） =====
         if (!dev->collect_enable) {
-            // 采集被关闭
             if (dev->last_collect_state == 1) {
-                // 状态切换：开启 → 关闭
-                dev->status = 1;  // 采集关闭
+                dev->status = 1;
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg), "TCP采集已关闭");
-
-                // 释放连接资源
-                if (dev->ctx != NULL) {
-                    modbus_close(dev->ctx);
-                    modbus_free(dev->ctx);
-                    dev->ctx = NULL;
+                if (ctx != NULL) {
+                    modbus_close(ctx);
+                    modbus_free(ctx);
+                    ctx = NULL;
                 }
-                LOG_INFO("TCP设备%d: 云端指令关闭采集，已释放连接资源", idx);
+                LOG_INFO("TCP设备%d: 云端指令关闭采集", idx);
                 dev->last_collect_state = 0;
             }
             sleep(2);
             continue;
         }
 
-        // ===== 采集恢复：关闭 → 开启 =====
         if (dev->last_collect_state == 0) {
-            LOG_INFO("TCP设备%d: 云端指令开启采集，恢复正常采集任务", idx);
+            LOG_INFO("TCP设备%d: 云端指令开启采集", idx);
             dev->last_collect_state = 1;
-            // 恢复时清除之前的故障状态（如果之前是离线故障）
             if (dev->status == 2 || dev->status == 1) {
                 dev->status = 0;
                 dev->tcp_fail_time = 0;
@@ -188,25 +200,28 @@ void *modbus_tcp_read_generic(void *arg)
             }
         }
 
-        // ===== 执行采集 =====
-        printf("IP=%s, 端口=%d, 从站=%d\n", dev->ip, dev->port, dev->slave_id);
+        // ===== 执行采集（用局部变量，不用 dev->ip/port/slave_id） =====
+        printf("IP=%s, 端口=%d, 从站=%d\n", local_ip, local_port, local_slave_id);
 
-        if (modbus_tcp_device_read(dev, &dev->ctx, 0, 10, regs) == -1) {
+        // ★ 需要 modbus_tcp_device_read_with_params 版本
+        if (modbus_tcp_device_read_with_params(local_ip, local_port, local_slave_id,
+                                                &ctx, 0, 10, regs) == -1) {
             LOG_ERROR("TCP设备%d: 所有热重试失败，60s冷休眠后重试", idx);
-            // ★★★ 只有在之前不是故障状态时才更新故障信息 ★★★
             if (dev->status != 2) {
-                dev->status = 2;  // 离线故障
+                dev->status = 2;
                 dev->tcp_fail_time = time(NULL);
                 char time_str[32];
                 strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&dev->tcp_fail_time));
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg),
                          "TCP离线,首次故障: %s", time_str);
             }
-            sleep(60);
+        if (cold_sleep_with_check(60) == -1) {
+            LOG_INFO("冷休眠被热加载中断");
+            break;  // 退出线程
+        }
             continue;
         }
 
-        // ===== 读取成功：如果当前是故障状态，恢复 =====
         if (dev->status == 2) {
             dev->status = 0;
             dev->tcp_fail_time = 0;
@@ -214,12 +229,10 @@ void *modbus_tcp_read_generic(void *arg)
             LOG_INFO("TCP设备%d: 故障恢复", idx);
         }
 
-        // 打印采集数据
         for (int i = 0; i < 2; i++) {
             LOG_INFO("TCP_REG[%d] = %d", i, regs[i]);
         }
 
-        // 发送到 CAN 总线
         pthread_mutex_lock(&mgr.bus_mutex);
         if (can_send(can_id, 2, regs) != 0) {
             LOG_WARN("TCP:CAN数据发送失败");
@@ -233,73 +246,95 @@ void *modbus_tcp_read_generic(void *arg)
     return NULL;
 }
 
-
+// ====================== RTU 采集线程（含局部变量优化） ======================
 void *modbus_rtu_read_generic(void *arg)
 {
     int idx = *(int *)arg;
     free(arg);
-    uint16_t regs[32];
 
+    // ★ 局部变量
+    char local_port[64];
+    int local_baudrate;
+    int local_slave_id;
+    int local_read_addr;
+    int local_read_count;
+    uint32_t can_id = CAN_ID_BASE_RTU + idx;
+
+    // ★ 首次读取配置（读锁保护）
+    pthread_rwlock_rdlock(&mgr.config_lock);
     rtu_device_t *dev = &mgr.rtu_devices[idx];
-//   // ===== 直接硬编码赋值所有成员（测试用） =====
-//     // 配置参数
-//     strcpy(dev->port, "/dev/ttyS3");
-//     dev->baudrate = 4800;
-//     dev->slave_id = 1;
-//     dev->read_addr = 0;
-//     dev->read_count = 2;
+    strcpy(local_port, dev->port);
+    local_baudrate = dev->baudrate;
+    local_slave_id = dev->slave_id;
+    local_read_addr = dev->read_addr;
+    local_read_count = dev->read_count;
+    dev->collect_enable = 1;
+    dev->last_collect_state = 1;
+    pthread_rwlock_unlock(&mgr.config_lock);
 
-//     // 运行时状态
-//     dev->collect_enable = 1;
-//     dev->status = 0;
-//     dev->last_collect_state = 1;
-//     dev->last_reported_status = -1;
-//     dev->fail_time = 0;
-//     dev->ctx = NULL;
+    uint16_t regs[32];
+    modbus_t *ctx = NULL;
+    int reload_counter = 0;
+
     snprintf(dev->alarm_msg, sizeof(dev->alarm_msg), "RTU初始化完成");
     snprintf(dev->name, sizeof(dev->name), "RTU_Dev_%d", idx);
 
     LOG_INFO("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d, 读地址=%d, 读数量=%d",
-             idx, dev->port, dev->baudrate, dev->slave_id,
-             dev->read_addr, dev->read_count);
-    uint32_t can_id = CAN_ID_BASE_RTU + idx;  // RTU设备0→0x100, 设备1→0x101
+             idx, local_port, local_baudrate, local_slave_id,
+             local_read_addr, local_read_count);
 
-    while (mgr.running) {
-        // ===== 采集开关状态变化检测 =====
+    // ★ while 条件改成 !collect_stop
+    while (!mgr.collect_stop) {
+        // ★ 每10次循环重读配置
+        reload_counter++;
+        if (reload_counter >= 10) {
+            reload_counter = 0;
+            pthread_rwlock_rdlock(&mgr.config_lock);
+            rtu_device_t *dev_reload = &mgr.rtu_devices[idx];
+            strcpy(local_port, dev_reload->port);
+            local_baudrate = dev_reload->baudrate;
+            local_slave_id = dev_reload->slave_id;
+            local_read_addr = dev_reload->read_addr;
+            local_read_count = dev_reload->read_count;
+            pthread_rwlock_unlock(&mgr.config_lock);
+            LOG_DEBUG("RTU设备%d: 重新读取配置", idx);
+        }
+
+        // ===== 采集开关状态变化检测（运行时状态） =====
         if (!dev->collect_enable) {
             if (dev->last_collect_state == 1) {
-                // 状态切换：开启 → 关闭
                 dev->status = 1;
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg), "RTU采集已关闭");
-
-                if (dev->ctx != NULL) {
-                    modbus_close(dev->ctx);
-                    modbus_free(dev->ctx);
-                    dev->ctx = NULL;
+                if (ctx != NULL) {
+                    modbus_close(ctx);
+                    modbus_free(ctx);
+                    ctx = NULL;
                 }
-                LOG_INFO("RTU设备%d: 云端指令关闭采集，已释放串口资源", idx);
+                LOG_INFO("RTU设备%d: 云端指令关闭采集", idx);
                 dev->last_collect_state = 0;
             }
             sleep(2);
             continue;
         }
 
-        // ===== 采集恢复：关闭 → 开启 =====
         if (dev->last_collect_state == 0) {
-            LOG_INFO("RTU设备%d: 云端指令开启采集，恢复正常采集任务", idx);
+            LOG_INFO("RTU设备%d: 云端指令开启采集", idx);
             dev->last_collect_state = 1;
-            if (dev->status == 2|| dev->status == 1) {
+            if (dev->status == 2 || dev->status == 1) {
                 dev->status = 0;
                 dev->fail_time = 0;
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg), "RTU已恢复");
             }
         }
 
-        // ===== 执行采集 =====
+        // ===== 执行采集（用局部变量） =====
         printf("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d\n",
-               idx, dev->port, dev->baudrate, dev->slave_id);
+               idx, local_port, local_baudrate, local_slave_id);
 
-        if (modbus_rtu_device_read(dev, 0, 2, regs) == -1) {
+        // ★ 需要 modbus_rtu_device_read_with_params 版本
+        if (modbus_rtu_device_read_with_params(local_port, local_baudrate, local_slave_id,
+                                                local_read_addr, local_read_count,
+                                                &ctx, regs) == -1) {
             LOG_ERROR("RTU设备%d: 所有热重试失败，60s冷休眠后重试", idx);
             if (dev->status != 2) {
                 dev->status = 2;
@@ -309,11 +344,13 @@ void *modbus_rtu_read_generic(void *arg)
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg),
                          "RTU离线，首次故障: %s", time_str);
             }
-            sleep(60);
+             if (cold_sleep_with_check(60) == -1) {
+            LOG_INFO("冷休眠被热加载中断");
+            break;  // 退出线程
+        }
             continue;
         }
 
-        // ===== 读取成功：如果当前是故障状态，恢复 =====
         if (dev->status == 2) {
             dev->status = 0;
             dev->fail_time = 0;
@@ -321,12 +358,10 @@ void *modbus_rtu_read_generic(void *arg)
             LOG_INFO("RTU设备%d: 故障恢复", idx);
         }
 
-        // 打印采集数据
         for (int i = 0; i < 2; i++) {
-            LOG_INFO("RTU_DATA[%d] = %d .从站地址：%d", i, regs[i],dev->slave_id);
+            LOG_INFO("RTU_DATA[%d] = %d .从站地址：%d", i, regs[i], local_slave_id);
         }
 
-        // 发送到 CAN 总线
         pthread_mutex_lock(&mgr.bus_mutex);
         if (can_send(can_id, 2, regs) != 0) {
             LOG_WARN("RTU设备%d: CAN数据发送失败", idx);
@@ -340,24 +375,21 @@ void *modbus_rtu_read_generic(void *arg)
     return NULL;
 }
 
+// ====================== CAN 接收线程 ======================
 void *can_receive_pthread(void *arg) {
     unsigned char data[8];
     int len;
-        uint32_t can_id;
+    uint32_t can_id;
 
     while (mgr.running) {
-      
-      //  pthread_mutex_lock(&mgr.bus_mutex);
-        if ( can_receive(&can_id, data, &len) == 0) {
-            // 构造一个临时 can_frame 给 handler 用
+        if (can_receive(&can_id, data, &len) == 0) {
             struct can_frame frame;
             frame.can_id = can_id;
             frame.can_dlc = len;
             for (int i = 0; i < len && i < 8; i++) {
                 frame.data[i] = data[i];
             }
-            
-            // 查表路由
+
             for (int i = 0; i < ROUTE_TABLE_SIZE; i++) {
                 if (can_id >= route_table[i].base && can_id < route_table[i].max) {
                     route_table[i].handler(can_id, &frame);
@@ -365,80 +397,100 @@ void *can_receive_pthread(void *arg) {
                 }
             }
         }
-       // sleep(1);
+        usleep(100000);  // 100ms，避免忙等
     }
     return NULL;
 }
 
+// ====================== MQTT 线程 ======================
 void *MQTT_pthread(void *arg) {
     int idx = *(int *)arg;
-    free(arg);  // 释放传入的索引内存（可选，但推荐）
-    int last_rtu_status = -1, last_tcp_status = -1;
+    free(arg);
+
+    // ★ 局部变量：存放从配置数组复制出来的状态
+    int rtu_status_copy[MAX_RTU_DEVICES];
+    char rtu_alarm_copy[MAX_RTU_DEVICES][128];
+    int tcp_status_copy[MAX_TCP_DEVICES];
+    char tcp_alarm_copy[MAX_TCP_DEVICES][128];
+    
+    // ★ last_reported_status 由 MQTT 线程自己维护，不依赖结构体中的字段
+    int last_rtu_status[MAX_RTU_DEVICES];
+    int last_tcp_status[MAX_TCP_DEVICES];
+    for (int i = 0; i < MAX_RTU_DEVICES; i++) last_rtu_status[i] = -1;
+    for (int i = 0; i < MAX_TCP_DEVICES; i++) last_tcp_status[i] = -1;
+    
+    int rtu_count, tcp_count;
     int last_can_fault = -1;
-    int last_can_reconnect_count = -1;  // ★★★ 新增：记录上次重连次数 ★★★
-char json_buf[1024];
+    int last_can_reconnect_count = -1;
+    char json_buf[1024];
 
-
-    // 记录上一次采集状态，用于去重日志
-    // gateway_manager_t *mgr = &mgr;  // 或者直接用全局 mgr
     while (mgr.running) {
         mgr.press = BMP280_READ();
         mgr.mqtt_connect_states = mqtt_is_connected();
 
-build_current_json(json_buf, sizeof(json_buf));
+        // ===== 1. ★ 读锁保护：复制所有需要的数据到局部变量 =====
+        pthread_rwlock_rdlock(&mgr.config_lock);
+        
+        rtu_count = mgr.rtu_device_count;
+        for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
+            rtu_status_copy[i] = mgr.rtu_devices[i].status;
+            strcpy(rtu_alarm_copy[i], mgr.rtu_devices[i].alarm_msg);
+        }
+        
+        tcp_count = mgr.tcp_device_count;
+        for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
+            tcp_status_copy[i] = mgr.tcp_devices[i].status;
+            strcpy(tcp_alarm_copy[i], mgr.tcp_devices[i].alarm_msg);
+        }
+        
+        pthread_rwlock_unlock(&mgr.config_lock);  // ★ 立即解锁
 
-if (mgr.mqtt_connect_states) {
-    data_cache_flush();
-    mqtt_publish_data1();
-} else {
-    build_current_json(json_buf, sizeof(json_buf));
-    data_cache_push_telemetry_json(json_buf);
-    printf("【缓存】MQTT离线，数据已缓存\n");
-}
+        // ===== 2. JSON 构建和 MQTT 上报（用局部变量中的数据） =====
+        build_current_json(json_buf, sizeof(json_buf));
 
-   // ===== RTU 设备状态上报 =====
-        for (int i = 0; i < mgr.rtu_device_count; i++) {
-            rtu_device_t *dev = &mgr.rtu_devices[i];
-            if (dev->status != dev->last_reported_status) {
-                if (dev->status == 0) {
+        if (mgr.mqtt_connect_states) {
+            data_cache_flush();
+            mqtt_publish_data1();
+        } else {
+            build_current_json(json_buf, sizeof(json_buf));
+            data_cache_push_telemetry_json(json_buf);
+            printf("【缓存】MQTT离线，数据已缓存\n");
+        }
+
+        // ===== 3. RTU 设备状态上报（用 rtu_status_copy，不用 mgr.rtu_devices） =====
+        for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
+            if (rtu_status_copy[i] != last_rtu_status[i]) {
+                if (rtu_status_copy[i] == 0) {
                     mqtt_publish_alarm("RTU", i, "running", "RTU", "RTU采集运行中");
-                } else if (dev->status == 1) {
+                } else if (rtu_status_copy[i] == 1) {
                     mqtt_publish_alarm("RTU", i, "stopped", "RTU", "RTU采集已关闭");
-                } else if (dev->status == 2) {
-                    mqtt_publish_alarm("RTU", i, "offline", "RTU", dev->alarm_msg);
+                } else if (rtu_status_copy[i] == 2) {
+                    mqtt_publish_alarm("RTU", i, "offline", "RTU", rtu_alarm_copy[i]);
                 }
-                dev->last_reported_status = dev->status;
-                if (mgr.mqtt_connect_states){
-                   // data_cache_push_alarm_rtu();
-                }
+                last_rtu_status[i] = rtu_status_copy[i];
             }
         }
 
-
-// ===== TCP 设备状态上报（遍历所有设备） =====
-for (int i = 0; i < mgr.tcp_device_count; i++) {
-    tcp_device_config_t *dev = &mgr.tcp_devices[i];
-    if (dev->status != dev->last_reported_status) {
-        if (dev->status == 0) {
-            mqtt_publish_alarm("TCP", i, "running", "TCP", "TCP采集运行中");
-        } else if (dev->status == 1) {
-            mqtt_publish_alarm("TCP", i, "stopped", "TCP", "TCP采集已关闭");
-        } else if (dev->status == 2) {
-            mqtt_publish_alarm("TCP", i, "offline", "TCP", dev->alarm_msg);
+        // ===== 4. TCP 设备状态上报（用 tcp_status_copy） =====
+        for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
+            if (tcp_status_copy[i] != last_tcp_status[i]) {
+                if (tcp_status_copy[i] == 0) {
+                    mqtt_publish_alarm("TCP", i, "running", "TCP", "TCP采集运行中");
+                } else if (tcp_status_copy[i] == 1) {
+                    mqtt_publish_alarm("TCP", i, "stopped", "TCP", "TCP采集已关闭");
+                } else if (tcp_status_copy[i] == 2) {
+                    mqtt_publish_alarm("TCP", i, "offline", "TCP", tcp_alarm_copy[i]);
+                }
+                last_tcp_status[i] = tcp_status_copy[i];
+            }
         }
-        dev->last_reported_status = dev->status;
-    }
- 
-}  
-        // ===== ★★★ CAN 状态上报（修正版） ★★★ =====
+
+        // ===== 5. CAN 状态上报 =====
         can_status_t can_status;
         can_get_status(&can_status);
 
-        // 条件1：状态变化（正常↔故障）
-        // 条件2：故障中且重连次数变化
         if (can_status.is_in_fault != last_can_fault ||
             (can_status.is_in_fault == 1 && can_status.total_reconnect_count != last_can_reconnect_count)) {
-            
             if (can_status.is_in_fault == 0) {
                 mqtt_publish_CAN_alarm("can_recovered", "CAN", can_status.last_alarm_msg);
             } else {
@@ -452,85 +504,117 @@ for (int i = 0; i < mgr.tcp_device_count; i++) {
     }
     return NULL;
 }
+
+// ====================== 热加载核心函数 ======================
 void reconfig_hot(void)
 {
-       init_tcp_devices();
+    LOG_INFO("热加载开始，停止所有采集线程...");
+
+    // 1. 停止所有采集线程
+    mgr.collect_stop = 1;
+
+    // 2. 等待所有 RTU 采集线程退出 (threads[10] ~ threads[10+MAX_RTU_DEVICES-1])
+    for (int i = 0; i < MAX_RTU_DEVICES; i++) {
+        if (mgr.threads[10 + i] != 0) {
+            pthread_join(mgr.threads[10 + i], NULL);
+            mgr.threads[10 + i] = 0;
+            LOG_DEBUG("RTU线程 %d 已退出", i);
+        }
+    }
+    // 等待所有 TCP 采集线程退出 (threads[2] ~ threads[2+MAX_TCP_DEVICES-1])
+    for (int i = 0; i < MAX_TCP_DEVICES; i++) {
+        if (mgr.threads[2 + i] != 0) {
+            pthread_join(mgr.threads[2 + i], NULL);
+            mgr.threads[2 + i] = 0;
+            LOG_DEBUG("TCP线程 %d 已退出", i);
+        }
+    }
+
+    LOG_INFO("所有采集线程已安全退出");
+
+    // 3. 重新加载配置（写锁保护，防止MQTT线程同时读）
+    pthread_rwlock_wrlock(&mgr.config_lock);
+    init_tcp_devices();
     init_rtu_devices();
-// 动态创建 RTU 线程
-for (int i = 0; i < mgr.rtu_device_count; i++) {
-    rtu_device_t  *dev = &mgr.rtu_devices[i];
-        LOG_INFO("主程序:启动RTU设备 %s (%D:%d)", dev->port, dev->slave_id, dev->baudrate);
+    pthread_rwlock_unlock(&mgr.config_lock);
 
-    int *idx_ptr = malloc(sizeof(int));
-    *idx_ptr = i;
-    pthread_create(&mgr.threads[10 + i], NULL, modbus_rtu_read_generic, idx_ptr);
-}// ===== 动态创建 TCP 设备采集线程 =====
+    LOG_INFO("配置已重新加载: RTU设备数=%d, TCP设备数=%d",
+             mgr.rtu_device_count, mgr.tcp_device_count);
 
-for (int i = 0; i < mgr.tcp_device_count; i++) {
-    tcp_device_config_t *dev = &mgr.tcp_devices[i];
-    LOG_INFO("主程序:启动TCP设备 %s (%s:%d)", dev->ip, dev->ip, dev->port);
-    
-    // 每个线程传入设备索引，线程内部根据索引找到对应的设备
-    int *idx_ptr = malloc(sizeof(int));
-    *idx_ptr = i;
-    pthread_create(&mgr.threads[2 + i], NULL, modbus_tcp_read_generic, idx_ptr);
-}  
+    // 4. 恢复采集
+    mgr.collect_stop = 0;
+
+    // 5. 重新创建所有采集线程
+    for (int i = 0; i < mgr.rtu_device_count; i++) {
+        int *idx_ptr = malloc(sizeof(int));
+        *idx_ptr = i;
+        pthread_create(&mgr.threads[10 + i], NULL, modbus_rtu_read_generic, idx_ptr);
+        LOG_INFO("RTU线程 %d 已创建", i);
+    }
+    for (int i = 0; i < mgr.tcp_device_count; i++) {
+        int *idx_ptr = malloc(sizeof(int));
+        *idx_ptr = i;
+        pthread_create(&mgr.threads[2 + i], NULL, modbus_tcp_read_generic, idx_ptr);
+        LOG_INFO("TCP线程 %d 已创建", i);
+    }
+
+    LOG_INFO("热加载完成！");
 }
+
 // ====================== 主函数 ======================
 int main(void) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
-    // rtu初始化随机种子
+    signal(SIGHUP, sigusr1_handler);
+
     srand((unsigned)time(NULL));
-    // 注册全局清理
     atexit(gateway_cleanup);
-    // 初始化全局mgr资源
+
     gateway_manager_init(&mgr);
-    // 加载配置
+
     config_set_default(&cfg);
     config_load("./gateway.conf", &cfg);
     printf("Modbus port: %s\n", cfg.modbus_port);
     printf("can port: %s\n", cfg.can_interface);
-    
-    // 底层外设初始化
+
     mqtt_Init();
     can_Init();
     modbus_relay_init();
     BMP280_READ_Init();
     data_cache_init();
+
     init_tcp_devices();
     init_rtu_devices();
 
-    signal(SIGHUP, sigusr1_handler);
-// 动态创建 RTU 线程
-for (int i = 0; i < mgr.rtu_device_count; i++) {
-    rtu_device_t  *dev = &mgr.rtu_devices[i];
-        LOG_INFO("主程序:启动RTU设备 %s (%D:%d)", dev->port, dev->slave_id, dev->baudrate);
+    // 创建 RTU 采集线程
+    for (int i = 0; i < mgr.rtu_device_count; i++) {
+        int *idx_ptr = malloc(sizeof(int));
+        *idx_ptr = i;
+        pthread_create(&mgr.threads[10 + i], NULL, modbus_rtu_read_generic, idx_ptr);
+        LOG_INFO("主程序: 启动RTU设备 %d", i);
+    }
 
-    int *idx_ptr = malloc(sizeof(int));
-    *idx_ptr = i;
-    pthread_create(&mgr.threads[10 + i], NULL, modbus_rtu_read_generic, idx_ptr);
-}// ===== 动态创建 TCP 设备采集线程 =====
-
-for (int i = 0; i < mgr.tcp_device_count; i++) {
-    tcp_device_config_t *dev = &mgr.tcp_devices[i];
-    LOG_INFO("主程序:启动TCP设备 %s (%s:%d)", dev->ip, dev->ip, dev->port);
-    
-    // 每个线程传入设备索引，线程内部根据索引找到对应的设备
-    int *idx_ptr = malloc(sizeof(int));
-    *idx_ptr = i;
-    pthread_create(&mgr.threads[2 + i], NULL, modbus_tcp_read_generic, idx_ptr);
-}   
+    // 创建 TCP 采集线程
+    for (int i = 0; i < mgr.tcp_device_count; i++) {
+        int *idx_ptr = malloc(sizeof(int));
+        *idx_ptr = i;
+        pthread_create(&mgr.threads[2 + i], NULL, modbus_tcp_read_generic, idx_ptr);
+        LOG_INFO("主程序: 启动TCP设备 %d", i);
+    }
 
     pthread_create(&mgr.threads[1], NULL, can_receive_pthread, &mgr);
     pthread_create(&mgr.threads[0], NULL, MQTT_pthread, &mgr);
 
     // 主线程循环
-    while(mgr.running)
-    {
-        LOG_DEBUG("主线程运行中...");
+    while (mgr.running) {
+        if (g_config_reload_flag) {
+            g_config_reload_flag = 0;
+            config_load("./gateway.conf", &cfg);
+            reconfig_hot();
+            LOG_INFO("热加载完成");
+        }
         sleep(1);
     }
-       return 0;  // 走到这里，atexit执行清理
 
+    return 0;
 }

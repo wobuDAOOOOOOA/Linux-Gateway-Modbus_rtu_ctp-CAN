@@ -403,75 +403,94 @@ int mqtt_publish_data1(void)
         return -1;
     }
 
+    // ★ 局部数组：存放复制出来的数据
+    int rtu_regs_copy[MAX_RTU_DEVICES][8];
+    int rtu_read_count_copy[MAX_RTU_DEVICES];
+    int tcp_regs_copy[MAX_TCP_DEVICES][8];
+    int rtu_count = 0, tcp_count = 0;
+
+    // ===== 1. 读锁保护：复制所有配置和数据到局部变量 =====
+    pthread_rwlock_rdlock(&mgr.config_lock);
+
+    rtu_count = mgr.rtu_device_count;
+    for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
+        // 复制 read_count（配置字段，在 config_lock 保护下）
+        rtu_read_count_copy[i] = mgr.rtu_devices[i].read_count;
+
+        // 复制 regs（采集数据，用 data_mutex 保护）
+        pthread_mutex_lock(&mgr.data_mutex);
+        for (int j = 0; j < rtu_read_count_copy[i] && j < 8; j++) {
+            rtu_regs_copy[i][j] = mgr.rtu_devices[i].regs[j];
+        }
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+
+    tcp_count = mgr.tcp_device_count;
+    for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
+        // TCP 固定读 2 个寄存器，直接复制
+        pthread_mutex_lock(&mgr.data_mutex);
+        for (int j = 0; j < 2 && j < 8; j++) {
+            tcp_regs_copy[i][j] = mgr.tcp_devices[i].regs[j];
+        }
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+
+    pthread_rwlock_unlock(&mgr.config_lock);  // ★ 解锁
+
+    // ===== 2. 用局部变量构建 JSON =====
     char payload[MAX_PAYLOAD_SIZE];
     int offset = 0;
     int first_prop = 1;
 
-    // 构造 JSON 开头
     offset += snprintf(payload + offset, sizeof(payload) - offset,
                        "{\"services\":[{\"service_id\":\"%s\",\"properties\":{",
                        cfg.service_id);
 
-    // ===== 1. 轮询所有 RTU 设备 =====
-    for (int i = 0; i < mgr.rtu_device_count; i++) {
-        rtu_device_t *dev = &mgr.rtu_devices[i];
-        
-       pthread_mutex_lock(&mgr.data_mutex);
-        
-        // 遍历该设备的 regs 数组（假设读了多少个寄存器就遍历多少个）
-        for (int j = 0; j < dev->read_count && j < 8; j++) {
-            // ★★★ 属性名：Modbus_RTU_X_DATAj ★★★
+    // ===== 3. 轮询 RTU 设备（用局部变量 rtu_regs_copy） =====
+    for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
+        for (int j = 0; j < rtu_read_count_copy[i] && j < 8; j++) {
             if (!first_prop) {
                 offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
             }
             offset += snprintf(payload + offset, sizeof(payload) - offset,
                                "\"Modbus_RTU_%d_DATA%d\":%d",
-                               i, j, dev->regs[j]);
-                               printf("\"获取拼接数据:Modbus_RTU_%d_DATA%d\":%d\n", i, j, dev->regs[j]);
+                               i, j, rtu_regs_copy[i][j]);
+            printf("\"获取拼接数据:Modbus_RTU_%d_DATA%d\":%d\n", 
+                   i, j, rtu_regs_copy[i][j]);
             first_prop = 0;
         }
-        
-        pthread_mutex_unlock(&mgr.data_mutex);
     }
 
-    // ===== 2. 轮询所有 TCP 设备 =====
-    for (int i = 0; i < mgr.tcp_device_count; i++) {
-        tcp_device_config_t *dev = &mgr.tcp_devices[i];
-        
-        pthread_mutex_lock(&mgr.data_mutex);
-        
-        // 遍历该设备的 regs 数组（假设读了 10 个寄存器，但只取前 8 个作为示例）
+    // ===== 4. 轮询 TCP 设备（用局部变量 tcp_regs_copy） =====
+    for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
         for (int j = 0; j < 2 && j < 8; j++) {
             if (!first_prop) {
                 offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
             }
             offset += snprintf(payload + offset, sizeof(payload) - offset,
                                "\"Modbus_TCP_%d_DATA%d\":%d",
-                               i, j, dev->regs[j]);
-                                printf("\"获取拼接数据:Modbus_TCP_%d_DATA%d\":%d\n", i, j, dev->regs[j]);
+                               i, j, tcp_regs_copy[i][j]);
+            printf("\"获取拼接数据:Modbus_TCP_%d_DATA%d\":%d\n",
+                   i, j, tcp_regs_copy[i][j]);
             first_prop = 0;
         }
-        
-        pthread_mutex_unlock(&mgr.data_mutex);
     }
 
-    // // ===== 3. 可选：加上大气压（只报一个） =====
+    // ===== 5. 可选：大气压 =====
     // if (!first_prop) {
     //     offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
     // }
     // offset += snprintf(payload + offset, sizeof(payload) - offset,
     //                    "\"press\":%.1f", mgr.press);
 
-    // 构造 JSON 结尾
     offset += snprintf(payload + offset, sizeof(payload) - offset,
                        "}}]}");
 
-    // ===== 4. 发送 =====
-   int ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic,
+    // ===== 6. 发送 =====
+    int ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic,
                                 strlen(payload), payload, 0, false);
     if (ret != MOSQ_ERR_SUCCESS) {
         LOG_ERROR("MQTT发布失败，错误码: %d，数据存入本地缓存", ret);
-        // ★ 发布失败时，把完整JSON存入缓存
         data_cache_push_telemetry_json(payload);
         return -1;
     }
