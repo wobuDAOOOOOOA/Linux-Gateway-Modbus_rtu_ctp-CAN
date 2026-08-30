@@ -27,6 +27,8 @@ typedef struct {
     int  port;
     int  slave_id;
     int  timeout_ms;
+    int   read_count;
+    int  read_addr;
     uint16_t regs[32];
     modbus_t *ctx;
     int last_reported_status;
@@ -73,6 +75,8 @@ typedef struct {
     // 同步互斥锁
     pthread_mutex_t data_mutex;
     pthread_mutex_t bus_mutex;
+    pthread_mutex_t rtu_bus_mutex;
+
     pthread_rwlock_t config_lock;          // ★ 新增：读写锁保护配置数组
 
     // 全局运行状态机

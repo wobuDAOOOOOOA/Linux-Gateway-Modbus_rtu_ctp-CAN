@@ -407,6 +407,7 @@ int mqtt_publish_data1(void)
     int rtu_regs_copy[MAX_RTU_DEVICES][8];
     int rtu_read_count_copy[MAX_RTU_DEVICES];
     int tcp_regs_copy[MAX_TCP_DEVICES][8];
+    int tcp_read_count_copy[MAX_TCP_DEVICES];  // ★ 新增
     int rtu_count = 0, tcp_count = 0;
 
     // ===== 1. 读锁保护：复制所有配置和数据到局部变量 =====
@@ -414,10 +415,8 @@ int mqtt_publish_data1(void)
 
     rtu_count = mgr.rtu_device_count;
     for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
-        // 复制 read_count（配置字段，在 config_lock 保护下）
         rtu_read_count_copy[i] = mgr.rtu_devices[i].read_count;
 
-        // 复制 regs（采集数据，用 data_mutex 保护）
         pthread_mutex_lock(&mgr.data_mutex);
         for (int j = 0; j < rtu_read_count_copy[i] && j < 8; j++) {
             rtu_regs_copy[i][j] = mgr.rtu_devices[i].regs[j];
@@ -427,15 +426,18 @@ int mqtt_publish_data1(void)
 
     tcp_count = mgr.tcp_device_count;
     for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
-        // TCP 固定读 2 个寄存器，直接复制
+        // ★ 新增：复制 read_count
+        tcp_read_count_copy[i] = mgr.tcp_devices[i].read_count;
+
         pthread_mutex_lock(&mgr.data_mutex);
-        for (int j = 0; j < 2 && j < 8; j++) {
+        // ★ 用 tcp_read_count_copy[i] 控制循环次数
+        for (int j = 0; j < tcp_read_count_copy[i] && j < 8; j++) {
             tcp_regs_copy[i][j] = mgr.tcp_devices[i].regs[j];
         }
         pthread_mutex_unlock(&mgr.data_mutex);
     }
 
-    pthread_rwlock_unlock(&mgr.config_lock);  // ★ 解锁
+    pthread_rwlock_unlock(&mgr.config_lock);
 
     // ===== 2. 用局部变量构建 JSON =====
     char payload[MAX_PAYLOAD_SIZE];
@@ -446,7 +448,7 @@ int mqtt_publish_data1(void)
                        "{\"services\":[{\"service_id\":\"%s\",\"properties\":{",
                        cfg.service_id);
 
-    // ===== 3. 轮询 RTU 设备（用局部变量 rtu_regs_copy） =====
+    // ===== 3. 轮询 RTU 设备 =====
     for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
         for (int j = 0; j < rtu_read_count_copy[i] && j < 8; j++) {
             if (!first_prop) {
@@ -461,9 +463,9 @@ int mqtt_publish_data1(void)
         }
     }
 
-    // ===== 4. 轮询 TCP 设备（用局部变量 tcp_regs_copy） =====
+    // ===== 4. 轮询 TCP 设备（用 tcp_read_count_copy[i]） =====
     for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
-        for (int j = 0; j < 2 && j < 8; j++) {
+        for (int j = 0; j < tcp_read_count_copy[i] && j < 8; j++) {
             if (!first_prop) {
                 offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
             }

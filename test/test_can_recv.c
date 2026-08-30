@@ -22,7 +22,7 @@ int main() {
     }
 
     // 2. 指定 vcan0 接口
-    strcpy(ifr.ifr_name, "vcan0");
+    strcpy(ifr.ifr_name, "can0");
     if (ioctl(s, SIOCGIFINDEX, &ifr) < 0) {
         perror("ioctl");
         return 1;

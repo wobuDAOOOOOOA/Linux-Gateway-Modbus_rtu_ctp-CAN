@@ -61,6 +61,19 @@ static can_status_t g_can_status = {0};
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 // ====================== 内部状态更新函数 ======================
 static void can_reset_stats(void)
 {

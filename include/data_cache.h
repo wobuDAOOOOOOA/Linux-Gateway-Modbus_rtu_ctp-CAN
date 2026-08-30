@@ -40,5 +40,6 @@ void data_cache_flush(void);
 int data_cache_get_count(void);
 bool data_cache_is_empty(void);
 bool data_cache_is_full(void);
+int data_cache_is_flushing(void);
 
 #endif

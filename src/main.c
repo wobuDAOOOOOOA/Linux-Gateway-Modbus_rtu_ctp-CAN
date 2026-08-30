@@ -49,13 +49,13 @@ static void gateway_manager_init(gateway_manager_t *mgr)
 
 // ====================== 退出清理函数 ======================
 void signal_handler(int sig) {
-    printf("收到信号 %d，准备退出\n", sig);
+    LOG_INFO("收到信号 %d，准备退出\n", sig);
     mgr.running = 0;            // 让所有线程退出
 }
 
 void sigusr1_handler(int sig)
 {
-    printf("收到SIGHUP，重新加载配置\n");
+    LOG_INFO("收到SIGHUP，重新加载配置\n");
     g_config_reload_flag = 1;   // ★ 只设标志位
 }
 
@@ -102,8 +102,10 @@ void init_tcp_devices(void)
         dev->port = cfg.tcp_port[i];
         dev->slave_id = cfg.tcp_slave_id[i];
         dev->timeout_ms = 500;
+         dev->read_addr = cfg.tcp_read_addr[i];    // ★ 新增
+        dev->read_count = cfg.tcp_read_count[i];  // ★ 新增
         dev->ctx = NULL;
-
+       
         count++;
     }
     mgr.tcp_device_count = count;
@@ -142,6 +144,8 @@ void *modbus_tcp_read_generic(void *arg)
     char local_ip[32];
     int local_port;
     int local_slave_id;
+    int local_read_addr;
+    int local_read_count;
     uint32_t can_id = CAN_ID_BASE_TCP + idx;
 
     // ★ 首次读取配置（读锁保护）
@@ -150,11 +154,13 @@ void *modbus_tcp_read_generic(void *arg)
     strcpy(local_ip, dev->ip);
     local_port = dev->port;
     local_slave_id = dev->slave_id;
+    local_read_addr = dev->read_addr;    // ★ 新增
+    local_read_count = dev->read_count;  // ★ 新增
     dev->collect_enable = 1;
     dev->last_collect_state = 1;
     pthread_rwlock_unlock(&mgr.config_lock);
 
-    uint16_t regs[32];
+  //  uint16_t regs[32];
     modbus_t *ctx = NULL;
     int reload_counter = 0;
 
@@ -205,7 +211,7 @@ void *modbus_tcp_read_generic(void *arg)
 
         // ★ 需要 modbus_tcp_device_read_with_params 版本
         if (modbus_tcp_device_read_with_params(local_ip, local_port, local_slave_id,
-                                                &ctx, 0, 10, regs) == -1) {
+                                                &ctx, local_read_addr, local_read_count, dev->regs) == -1) {
             LOG_ERROR("TCP设备%d: 所有热重试失败，60s冷休眠后重试", idx);
             if (dev->status != 2) {
                 dev->status = 2;
@@ -229,15 +235,15 @@ void *modbus_tcp_read_generic(void *arg)
             LOG_INFO("TCP设备%d: 故障恢复", idx);
         }
 
-        for (int i = 0; i < 2; i++) {
-            LOG_INFO("TCP_REG[%d] = %d", i, regs[i]);
+        for (int i = 0; i < local_read_count; i++) {
+            LOG_INFO("TCP_REG[%d] = %d", i, dev->regs[i]);
         }
 
-        pthread_mutex_lock(&mgr.bus_mutex);
-        if (can_send(can_id, 2, regs) != 0) {
-            LOG_WARN("TCP:CAN数据发送失败");
-        }
-        pthread_mutex_unlock(&mgr.bus_mutex);
+        // pthread_mutex_lock(&mgr.bus_mutex);
+        // if (can_send(can_id, local_read_count, dev->regs) != 0) {
+        //     LOG_WARN("TCP:CAN数据发送失败");
+        // }
+        // pthread_mutex_unlock(&mgr.bus_mutex);
 
         sleep(1);
     }
@@ -272,7 +278,7 @@ void *modbus_rtu_read_generic(void *arg)
     dev->last_collect_state = 1;
     pthread_rwlock_unlock(&mgr.config_lock);
 
-    uint16_t regs[32];
+   // uint16_t regs[32];
     modbus_t *ctx = NULL;
     int reload_counter = 0;
 
@@ -334,7 +340,7 @@ void *modbus_rtu_read_generic(void *arg)
         // ★ 需要 modbus_rtu_device_read_with_params 版本
         if (modbus_rtu_device_read_with_params(local_port, local_baudrate, local_slave_id,
                                                 local_read_addr, local_read_count,
-                                                &ctx, regs) == -1) {
+                                                &ctx, dev->regs) == -1) {
             LOG_ERROR("RTU设备%d: 所有热重试失败，60s冷休眠后重试", idx);
             if (dev->status != 2) {
                 dev->status = 2;
@@ -358,15 +364,15 @@ void *modbus_rtu_read_generic(void *arg)
             LOG_INFO("RTU设备%d: 故障恢复", idx);
         }
 
-        for (int i = 0; i < 2; i++) {
-            LOG_INFO("RTU_DATA[%d] = %d .从站地址：%d", i, regs[i], local_slave_id);
+        for (int i = 0; i < local_read_count; i++) {
+            LOG_INFO("RTU_DATA[%d] = %d .从站地址：%d", i, dev->regs[i], local_slave_id);
         }
 
-        pthread_mutex_lock(&mgr.bus_mutex);
-        if (can_send(can_id, 2, regs) != 0) {
-            LOG_WARN("RTU设备%d: CAN数据发送失败", idx);
-        }
-        pthread_mutex_unlock(&mgr.bus_mutex);
+        // pthread_mutex_lock(&mgr.bus_mutex);
+        // if (can_send(can_id, local_read_count, regs) != 0) {
+        //     LOG_WARN("RTU设备%d: CAN数据发送失败", idx);
+        // }
+        // pthread_mutex_unlock(&mgr.bus_mutex);
 
         sleep(1);
     }
@@ -387,15 +393,15 @@ void *can_receive_pthread(void *arg) {
             frame.can_id = can_id;
             frame.can_dlc = len;
             for (int i = 0; i < len && i < 8; i++) {
-                frame.data[i] = data[i];
+                printf("收到can帧:%d,ID:%d\n",data[i],frame.can_id);
             }
 
-            for (int i = 0; i < ROUTE_TABLE_SIZE; i++) {
-                if (can_id >= route_table[i].base && can_id < route_table[i].max) {
-                    route_table[i].handler(can_id, &frame);
-                    break;
-                }
-            }
+            // for (int i = 0; i < ROUTE_TABLE_SIZE; i++) {
+            //     if (can_id >= route_table[i].base && can_id < route_table[i].max) {
+            //         route_table[i].handler(can_id, &frame);
+            //         break;
+            //     }
+            // }
         }
         usleep(100000);  // 100ms，避免忙等
     }
@@ -447,7 +453,7 @@ void *MQTT_pthread(void *arg) {
 
         // ===== 2. JSON 构建和 MQTT 上报（用局部变量中的数据） =====
         build_current_json(json_buf, sizeof(json_buf));
-
+//  if (mgr.mqtt_connect_states && !data_cache_is_flushing()) {
         if (mgr.mqtt_connect_states) {
             data_cache_flush();
             mqtt_publish_data1();
@@ -456,7 +462,9 @@ void *MQTT_pthread(void *arg) {
             data_cache_push_telemetry_json(json_buf);
             printf("【缓存】MQTT离线，数据已缓存\n");
         }
-
+        
+/*TO DO data_cache_flush() 是同步执行，执行补传的时候mqtt不会去读取共享结构体，导致补传期间数据丢失
+需要把补传放入一个单独的线程补传时mqtt线程读共享结构体拼接json继续放到数据库直到补传完成才正常上报*/
         // ===== 3. RTU 设备状态上报（用 rtu_status_copy，不用 mgr.rtu_devices） =====
         for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
             if (rtu_status_copy[i] != last_rtu_status[i]) {

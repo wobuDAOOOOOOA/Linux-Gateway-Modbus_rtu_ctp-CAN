@@ -16,15 +16,17 @@ int can_Init(void);
 int can_send(uint16_t id, uint16_t dlc, unsigned short *data);
 int can_receive(uint32_t *can_id, unsigned char *buffer, int *len);
 void can_cleanup(void);
-
-
- void handle_rtu_frame(uint32_t can_id, struct can_frame *frame);
- void handle_tcp_frame(uint32_t can_id, struct can_frame *frame);
-
 // ★★★ 获取当前CAN状态（供MQTT线程调用） ★★★
 void can_get_status(can_status_t *status);
 typedef void (*can_frame_handler_t)(uint32_t can_id, struct can_frame *frame);////
 
+
+
+
+//要接入真实can设备的话这里就直接不用了
+/////////////
+ void handle_rtu_frame(uint32_t can_id, struct can_frame *frame);
+ void handle_tcp_frame(uint32_t can_id, struct can_frame *frame);
 /// @brief ////////
 typedef struct {
     uint32_t base;
@@ -35,12 +37,16 @@ typedef struct {
 static const can_route_entry_t route_table[] = {
     {CAN_ID_BASE_RTU,   CAN_ID_BASE_RTU + MAX_RTU_DEVICES,   handle_rtu_frame},
     {CAN_ID_BASE_TCP,   CAN_ID_BASE_TCP + MAX_TCP_DEVICES,   handle_tcp_frame},
-
- 
 };
 #define ROUTE_TABLE_SIZE (sizeof(route_table) / sizeof(route_table[0]))
 #define CAN_MAX_RETRY     3
 #define CAN_BASE_DELAY    5
 //#define CAN_ALARM_INTERVAL 30
+////////////
+
+
+
+
+
 
 #endif

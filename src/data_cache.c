@@ -7,6 +7,9 @@
 #include <sqlite3.h>
 #include "gateway.h"
 #include "config.h"
+
+static int g_flushing = 0;
+
 static data_cache_t g_cache;
 static pthread_mutex_t g_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -200,6 +203,8 @@ int data_cache_push_alarm_tcp(const char *type, const char *module, const char *
 
 void data_cache_flush(void)
 {
+        g_flushing = 1;
+
     pthread_mutex_lock(&g_cache_mutex);
 
     int count = db_get_count(g_cache.db);
@@ -259,6 +264,7 @@ void data_cache_flush(void)
     db_exec(g_cache.db, "DELETE FROM cache;");
 
     pthread_mutex_unlock(&g_cache_mutex);
+    g_flushing = 0;
 
     printf("【缓存】所有缓存数据已补传完成\n");
 }
@@ -282,4 +288,8 @@ bool data_cache_is_full(void)
     int count = db_get_count(g_cache.db);
     pthread_mutex_unlock(&g_cache_mutex);
     return count >= g_cache.max_records;
+}
+int data_cache_is_flushing(void)
+{
+    return g_flushing;
 }

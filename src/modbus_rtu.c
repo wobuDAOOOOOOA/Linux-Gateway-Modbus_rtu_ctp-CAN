@@ -117,7 +117,11 @@ int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave
         }
 
         // 2. 执行读取
+                pthread_mutex_lock(&mgr.rtu_bus_mutex);
+
         rc = modbus_read_registers(*ctx, addr, nb, dest);
+                pthread_mutex_unlock(&mgr.rtu_bus_mutex);
+
         if (rc != -1) {
             LOG_INFO("RTU:读取成功，获取%d个寄存器", rc);
             return rc;
