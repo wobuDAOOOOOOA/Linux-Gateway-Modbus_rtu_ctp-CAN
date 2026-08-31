@@ -90,7 +90,7 @@ setsockopt(sock, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS,
 
 ### 你的"终于懂了"时刻（5月9日）：
 
-> CAN自收发问题终于解决。你发现是SocketCAN默认不接收自己发送的帧，需要设置`CAN_RAW_RECV_OWN_MSGS`。你说"终于懂了"。
+> CAN自收发问题终于解决。你发现是SocketCAN默认不接收自己发送的帧，需要设置`CAN_RAW_RECV_OWN_MSGS`。
 > 
 > 
 
