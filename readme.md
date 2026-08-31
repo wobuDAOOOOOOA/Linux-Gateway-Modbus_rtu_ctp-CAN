@@ -48,7 +48,6 @@
 ├── docs/                  #一些基础文档
 ├── src/                   # 源代码
 ├── include/               # 头文件
-├── modbus_tcp_slave/      #tcp虚拟从站  ps现在不用这玩意了，用开源软件open Modsim 2 
 ├── Makefile
 ├── README.md
 ├── test/        # TCP/CAN/MQTT/fork 等基础功能测试(学习用)
