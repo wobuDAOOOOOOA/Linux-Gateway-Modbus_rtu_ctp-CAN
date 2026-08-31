@@ -403,20 +403,22 @@ int mqtt_publish_data1(void)
         return -1;
     }
 
-    // ★ 局部数组：存放复制出来的数据
+    // ★ 局部数组
     int rtu_regs_copy[MAX_RTU_DEVICES][8];
     int rtu_read_count_copy[MAX_RTU_DEVICES];
     int tcp_regs_copy[MAX_TCP_DEVICES][8];
-    int tcp_read_count_copy[MAX_TCP_DEVICES];  // ★ 新增
-    int rtu_count = 0, tcp_count = 0;
+    int tcp_read_count_copy[MAX_TCP_DEVICES];
+    int can_regs_copy[MAX_CAN_DEVICES][8];
+    int can_read_count_copy[MAX_CAN_DEVICES];
+    int rtu_count = 0, tcp_count = 0, can_count = 0;
 
-    // ===== 1. 读锁保护：复制所有配置和数据到局部变量 =====
+    // ===== 1. 复制数据 =====
     pthread_rwlock_rdlock(&mgr.config_lock);
 
+    // RTU
     rtu_count = mgr.rtu_device_count;
     for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
         rtu_read_count_copy[i] = mgr.rtu_devices[i].read_count;
-
         pthread_mutex_lock(&mgr.data_mutex);
         for (int j = 0; j < rtu_read_count_copy[i] && j < 8; j++) {
             rtu_regs_copy[i][j] = mgr.rtu_devices[i].regs[j];
@@ -424,22 +426,31 @@ int mqtt_publish_data1(void)
         pthread_mutex_unlock(&mgr.data_mutex);
     }
 
+    // TCP
     tcp_count = mgr.tcp_device_count;
     for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
-        // ★ 新增：复制 read_count
         tcp_read_count_copy[i] = mgr.tcp_devices[i].read_count;
-
         pthread_mutex_lock(&mgr.data_mutex);
-        // ★ 用 tcp_read_count_copy[i] 控制循环次数
         for (int j = 0; j < tcp_read_count_copy[i] && j < 8; j++) {
             tcp_regs_copy[i][j] = mgr.tcp_devices[i].regs[j];
         }
         pthread_mutex_unlock(&mgr.data_mutex);
     }
 
+    // ★ CAN
+    can_count = mgr.can_device_count;
+    for (int i = 0; i < can_count && i < MAX_CAN_DEVICES; i++) {
+        can_read_count_copy[i] = mgr.can_devices[i].dlc;
+        pthread_mutex_lock(&mgr.data_mutex);
+        for (int j = 0; j < can_read_count_copy[i] && j < 8; j++) {
+            can_regs_copy[i][j] = mgr.can_devices[i].data[j];
+        }
+        pthread_mutex_unlock(&mgr.data_mutex);
+    }
+
     pthread_rwlock_unlock(&mgr.config_lock);
 
-    // ===== 2. 用局部变量构建 JSON =====
+    // ===== 2. 构建 JSON =====
     char payload[MAX_PAYLOAD_SIZE];
     int offset = 0;
     int first_prop = 1;
@@ -448,7 +459,7 @@ int mqtt_publish_data1(void)
                        "{\"services\":[{\"service_id\":\"%s\",\"properties\":{",
                        cfg.service_id);
 
-    // ===== 3. 轮询 RTU 设备 =====
+    // ===== 3. RTU：Modbus_RTU_%d_DATA%d =====
     for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
         for (int j = 0; j < rtu_read_count_copy[i] && j < 8; j++) {
             if (!first_prop) {
@@ -457,13 +468,12 @@ int mqtt_publish_data1(void)
             offset += snprintf(payload + offset, sizeof(payload) - offset,
                                "\"Modbus_RTU_%d_DATA%d\":%d",
                                i, j, rtu_regs_copy[i][j]);
-            printf("\"获取拼接数据:Modbus_RTU_%d_DATA%d\":%d\n", 
-                   i, j, rtu_regs_copy[i][j]);
+           // printf("RTU: Modbus_RTU_%d_DATA%d = %d\n", i, j, rtu_regs_copy[i][j]);
             first_prop = 0;
         }
     }
 
-    // ===== 4. 轮询 TCP 设备（用 tcp_read_count_copy[i]） =====
+    // ===== 4. TCP：Modbus_TCP_%d_DATA%d =====
     for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
         for (int j = 0; j < tcp_read_count_copy[i] && j < 8; j++) {
             if (!first_prop) {
@@ -472,23 +482,30 @@ int mqtt_publish_data1(void)
             offset += snprintf(payload + offset, sizeof(payload) - offset,
                                "\"Modbus_TCP_%d_DATA%d\":%d",
                                i, j, tcp_regs_copy[i][j]);
-            printf("\"获取拼接数据:Modbus_TCP_%d_DATA%d\":%d\n",
-                   i, j, tcp_regs_copy[i][j]);
+           // printf("TCP: Modbus_TCP_%d_DATA%d = %d\n", i, j, tcp_regs_copy[i][j]);
             first_prop = 0;
         }
     }
 
-    // ===== 5. 可选：大气压 =====
-    // if (!first_prop) {
-    //     offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
-    // }
-    // offset += snprintf(payload + offset, sizeof(payload) - offset,
-    //                    "\"press\":%.1f", mgr.press);
+    // ===== ★ 5. CAN：CAN_%d_DATA%d =====
+    for (int i = 0; i < can_count && i < MAX_CAN_DEVICES; i++) {
+        for (int j = 0; j < can_read_count_copy[i] && j < 8; j++) {
+            if (!first_prop) {
+                offset += snprintf(payload + offset, sizeof(payload) - offset, ",");
+            }
+            offset += snprintf(payload + offset, sizeof(payload) - offset,
+                               "\"CAN_%d_DATA%d\":%d",
+                               i, j, can_regs_copy[i][j]);
+         //   printf("CAN: CAN_%d_DATA%d = %d\n", i, j, can_regs_copy[i][j]);
+            first_prop = 0;
+        }
+    }
 
+    // ===== 6. 收尾 =====
     offset += snprintf(payload + offset, sizeof(payload) - offset,
                        "}}]}");
 
-    // ===== 6. 发送 =====
+    // ===== 7. 发送 =====
     int ret = mosquitto_publish(g_mosq, NULL, cfg.mqtt_topic,
                                 strlen(payload), payload, 0, false);
     if (ret != MOSQ_ERR_SUCCESS) {

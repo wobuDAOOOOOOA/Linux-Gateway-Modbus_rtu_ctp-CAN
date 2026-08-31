@@ -133,7 +133,22 @@ void init_rtu_devices(void)
     }
     mgr.rtu_device_count = count;
 }
+void init_can_devices(void)
+{
+    memset(mgr.can_devices, 0, sizeof(mgr.can_devices));
+    mgr.can_device_count = 0;
 
+    for (int i = 0; i < MAX_CAN_DEVICES; i++) {
+        // 只要 can_devices[i] != 0 就认为有效，不再依赖 enable 字段
+        if (cfg.can_devices[i] != 0) {
+            mgr.can_devices[mgr.can_device_count].can_id = cfg.can_devices[i];
+                memset( mgr.can_devices[i].data, 0, sizeof(mgr.can_devices[i].data));
+ 
+                    mgr.can_devices[i].dlc = 0;
+            mgr.can_device_count++;
+        }
+    }
+}
 // ====================== TCP 采集线程（含局部变量优化） ======================
 void *modbus_tcp_read_generic(void *arg)
 {
@@ -146,7 +161,7 @@ void *modbus_tcp_read_generic(void *arg)
     int local_slave_id;
     int local_read_addr;
     int local_read_count;
-    uint32_t can_id = CAN_ID_BASE_TCP + idx;
+   // uint32_t can_id = CAN_ID_BASE_TCP + idx;
 
     // ★ 首次读取配置（读锁保护）
     pthread_rwlock_rdlock(&mgr.config_lock);
@@ -264,7 +279,7 @@ void *modbus_rtu_read_generic(void *arg)
     int local_slave_id;
     int local_read_addr;
     int local_read_count;
-    uint32_t can_id = CAN_ID_BASE_RTU + idx;
+ //   uint32_t can_id = CAN_ID_BASE_RTU + idx;
 
     // ★ 首次读取配置（读锁保护）
     pthread_rwlock_rdlock(&mgr.config_lock);
@@ -386,24 +401,35 @@ void *can_receive_pthread(void *arg) {
     unsigned char data[8];
     int len;
     uint32_t can_id;
+    int found;
 
-    while (mgr.running) {
+    while (!mgr.collect_stop) {
         if (can_receive(&can_id, data, &len) == 0) {
-            struct can_frame frame;
-            frame.can_id = can_id;
-            frame.can_dlc = len;
-            for (int i = 0; i < len && i < 8; i++) {
-                printf("收到can帧:%d,ID:%d\n",data[i],frame.can_id);
+            found = 0;
+            for (int i = 0; i < mgr.can_device_count; i++) {
+                if (mgr.can_devices[i].can_id == can_id) {
+                    found = 1;
+                    
+                    // 打印接收到的数据
+                    for (int j = 0; j < len; j++) {
+                        LOG_INFO("CAN 设备[%d] ID=0x%x 数据[%d]=%d", i, can_id, j, data[j]);
+                    }
+                    
+                    // 加锁保存数据
+                    pthread_mutex_lock(&mgr.data_mutex);
+                    memcpy(mgr.can_devices[i].data, data, len);
+                    mgr.can_devices[i].dlc = len;
+                    pthread_mutex_unlock(&mgr.data_mutex);
+                    break;
+                }
             }
-
-            // for (int i = 0; i < ROUTE_TABLE_SIZE; i++) {
-            //     if (can_id >= route_table[i].base && can_id < route_table[i].max) {
-            //         route_table[i].handler(can_id, &frame);
-            //         break;
-            //     }
-            // }
+            
+            // 没找到匹配的设备，打印警告（可选）
+            if (!found) {
+                LOG_WARN("CAN: 收到未知设备ID=0x%x 的数据，已忽略", can_id);
+            }
         }
-        usleep(100000);  // 100ms，避免忙等
+        usleep(1000);  // 1ms，防止CPU空转
     }
     return NULL;
 }
@@ -545,6 +571,7 @@ void reconfig_hot(void)
     init_tcp_devices();
     init_rtu_devices();
     pthread_rwlock_unlock(&mgr.config_lock);
+    init_can_devices();
 
     LOG_INFO("配置已重新加载: RTU设备数=%d, TCP设备数=%d",
              mgr.rtu_device_count, mgr.tcp_device_count);
@@ -565,6 +592,8 @@ void reconfig_hot(void)
         pthread_create(&mgr.threads[2 + i], NULL, modbus_tcp_read_generic, idx_ptr);
         LOG_INFO("TCP线程 %d 已创建", i);
     }
+        pthread_create(&mgr.threads[1], NULL, can_receive_pthread, &mgr);
+                LOG_INFO("CAN线程 %d 已创建\n");
 
     LOG_INFO("热加载完成！");
 }
@@ -593,6 +622,7 @@ int main(void) {
 
     init_tcp_devices();
     init_rtu_devices();
+    init_can_devices();
 
     // 创建 RTU 采集线程
     for (int i = 0; i < mgr.rtu_device_count; i++) {

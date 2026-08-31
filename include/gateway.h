@@ -11,86 +11,85 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <modbus/modbus.h>
-#include <signal.h>        // for sig_atomic_t
+#include <signal.h>
 
 #define MAX_TCP_DEVICES 4
 #define MAX_RTU_DEVICES 4
+#define MAX_CAN_DEVICES 4
 
-// CAN ID 分配规则（标准帧 11位，范围 0x000 ~ 0x7FF）
-#define CAN_ID_BASE_RTU    0x100   // RTU设备: 0x100 + 设备下标
-#define CAN_ID_BASE_TCP    0x200   // TCP设备: 0x200 + 设备下标
-#define CAN_ID_BASE_ALARM  0x300   // 告警:   0x300 + 设备下标
-
-// ====================== 工业级网关资源管理器 核心结构体 ======================
+// ====================== TCP 设备结构体 ======================
 typedef struct {
     char ip[64];
     int  port;
     int  slave_id;
     int  timeout_ms;
-    int   read_count;
     int  read_addr;
+    int  read_count;
     uint16_t regs[32];
     modbus_t *ctx;
-    int last_reported_status;
-    int status;
-    char alarm_msg[128];
-    time_t tcp_fail_time;
+
     int collect_enable;
     int last_collect_state;
+    int status;                 // 0=正常, 1=采集关闭, 2=离线故障
+    int last_reported_status;
+    char alarm_msg[128];
+    time_t tcp_fail_time;
 } tcp_device_config_t;
 
+// ====================== RTU 设备结构体 ======================
 typedef struct {
-    // ---------- 配置参数 ----------
     char port[64];
     int  baudrate;
     int  slave_id;
     int  read_addr;
     int  read_count;
 
-    // ---------- 运行时状态 ----------
     modbus_t *ctx;
     uint16_t regs[32];
 
-    int  status;                 // 0=正常, 1=采集关闭, 2=离线故障
-    int  last_reported_status;
-    int  last_collect_state;
+    int collect_enable;
+    int last_collect_state;
+    int status;
+    int last_reported_status;
     char alarm_msg[128];
     time_t fail_time;
-
-    int  collect_enable;         // 1=运行, 0=停止
 
     char name[32];
 } rtu_device_t;
 
+// ====================== CAN 设备结构体 ======================
+typedef struct {
+    uint32_t can_id;
+    uint8_t data[8];
+    uint8_t dlc;
+} can_device_t;
+
+// ====================== MQTT 状态机 ======================
 typedef enum {
     MQTT_DISCONNECTED,
     MQTT_CONNECTED,
     MQTT_FLUSHING,
 } mqtt_state_t;
 
+// ====================== 全局网关管理器 ======================
 typedef struct {
-    // 线程句柄
     pthread_t threads[15];
 
-    // 同步互斥锁
     pthread_mutex_t data_mutex;
     pthread_mutex_t bus_mutex;
     pthread_mutex_t rtu_bus_mutex;
 
-    pthread_rwlock_t config_lock;          // ★ 新增：读写锁保护配置数组
+    pthread_rwlock_t config_lock;
 
-    // 全局运行状态机
     uint8_t running;
-    volatile sig_atomic_t collect_stop;    // ★ 新增：控制采集线程启停
+    volatile sig_atomic_t collect_stop;
 
-    // 业务数据缓存
-    uint16_t regs[2];
-    unsigned short rtu_data[64];
     float latest_temperature;
     float latest_humidity;
     float press;
 
     _Bool mqtt_connect_states;
+    mqtt_state_t mqtt_state;
 
     rtu_device_t rtu_devices[MAX_RTU_DEVICES];
     int rtu_device_count;
@@ -98,12 +97,12 @@ typedef struct {
     tcp_device_config_t tcp_devices[MAX_TCP_DEVICES];
     int tcp_device_count;
 
-    mqtt_state_t mqtt_state;
+    can_device_t can_devices[MAX_CAN_DEVICES];
+    int can_device_count;
 
 } gateway_manager_t;
 
-// 全局唯一网关实例
 extern gateway_manager_t mgr;
-extern volatile sig_atomic_t g_config_reload_flag;  // ★ 新增：热加载标志
+extern volatile sig_atomic_t g_config_reload_flag;
 
 #endif

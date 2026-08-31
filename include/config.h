@@ -4,7 +4,7 @@
 // ====================== 多设备最大数量定义 ======================
 #define MAX_TCP_DEVICES 4    // TCP设备最大数量
 #define MAX_RTU_DEVICES 4  // RTU设备最大数量
-
+#define  MAX_CAN_DEVICES 4
 typedef struct {
     // ===== RTU配置（单设备） =====
     char modbus_port[64];
@@ -34,7 +34,10 @@ typedef struct {
     int  rtu_enable[MAX_RTU_DEVICES];      // 1=启用, 0=禁用
     // ===== CAN配置 =====
     char can_interface[16];
-
+    //uint32_t can_devices[MAX_CAN_DEVICES];
+int  can_devices[MAX_CAN_DEVICES];
+int can_bitrate;
+int can_enable;
     // ===== MQTT配置 =====
     char mqtt_broker[64];
     int  mqtt_port;
