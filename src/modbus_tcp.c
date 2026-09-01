@@ -37,58 +37,7 @@ modbus_t* modbus_tcp_connect(const char *ip, int port, int slave_id)
     return ctx;
 }
 
-// ====================== 原版（保留，给不需要热加载的场景用） ======================
-int modbus_tcp_device_read(tcp_device_config_t *dev_cfg, modbus_t **ctx,
-                           int addr, int nb, uint16_t *dest)
-{
-    int retry = 0;
-    int rc;
-    srand((unsigned)time(NULL) ^ (unsigned)pthread_self());
-
-    while (retry < TCP_MAX_RETRY) {
-        if (*ctx == NULL) {
-            LOG_ERROR("TCP:句柄为空，第%d次重连", retry + 1);
-            *ctx = modbus_tcp_connect(dev_cfg->ip, dev_cfg->port, dev_cfg->slave_id);
-            if (*ctx == NULL) {
-                int delay = TCP_BASE_DELAY * (1 << retry);
-                int jitter = rand() % 4 - 2;
-                delay += jitter;
-                if (delay < 1) delay = 1;
-
-                retry++;
-                if (retry < TCP_MAX_RETRY) {
-                    LOG_ERROR("TCP:重连失败，等待%ds后重试", delay);
-                    sleep(delay);
-                }
-                continue;
-            }
-        }
-
-        rc = modbus_read_registers(*ctx, addr, nb, dest);
-        if (rc != -1) {
-            LOG_INFO("TCP:读取成功，获取%d个寄存器", rc);
-            return rc;
-        }
-
-        LOG_ERROR("TCP:读取异常 %s，销毁TCP连接", modbus_strerror(errno));
-        modbus_close(*ctx);
-        modbus_free(*ctx);
-        *ctx = NULL;
-
-        retry++;
-        if (retry < TCP_MAX_RETRY) {
-            int delay = TCP_BASE_DELAY * (1 << retry);
-            int jitter = rand() % 4 - 2;
-            delay += jitter;
-            if (delay < 1) delay = 1;
-            LOG_ERROR("TCP:第%d次重试，等待%ds", retry, delay);
-            sleep(delay);
-        }
-    }
-
-    LOG_ERROR("TCP:所有重试耗尽，进入冷休眠状态");
-    return -1;
-}
+// 
 
 // ====================== ★★★ 新版：带显式参数（配合热加载 + 局部变量） ★★★ ======================
 int modbus_tcp_device_read_with_params(const char *ip, int port, int slave_id,
@@ -145,3 +94,56 @@ int modbus_tcp_device_read_with_params(const char *ip, int port, int slave_id,
     LOG_ERROR("TCP:所有重试耗尽，从站=%d 进入冷休眠", slave_id);
     return -1;
 }
+
+// ====================== 原版（保留，给不需要热加载的场景用） ======================
+// int modbus_tcp_device_read(tcp_device_config_t *dev_cfg, modbus_t **ctx,
+//                            int addr, int nb, uint16_t *dest)
+// {
+//     int retry = 0;
+//     int rc;
+//     srand((unsigned)time(NULL) ^ (unsigned)pthread_self());
+
+//     while (retry < TCP_MAX_RETRY) {
+//         if (*ctx == NULL) {
+//             LOG_ERROR("TCP:句柄为空，第%d次重连", retry + 1);
+//             *ctx = modbus_tcp_connect(dev_cfg->ip, dev_cfg->port, dev_cfg->slave_id);
+//             if (*ctx == NULL) {
+//                 int delay = TCP_BASE_DELAY * (1 << retry);
+//                 int jitter = rand() % 4 - 2;
+//                 delay += jitter;
+//                 if (delay < 1) delay = 1;
+
+//                 retry++;
+//                 if (retry < TCP_MAX_RETRY) {
+//                     LOG_ERROR("TCP:重连失败，等待%ds后重试", delay);
+//                     sleep(delay);
+//                 }
+//                 continue;
+//             }
+//         }
+
+//         rc = modbus_read_registers(*ctx, addr, nb, dest);
+//         if (rc != -1) {
+//             LOG_INFO("TCP:读取成功，获取%d个寄存器", rc);
+//             return rc;
+//         }
+
+//         LOG_ERROR("TCP:读取异常 %s，销毁TCP连接", modbus_strerror(errno));
+//         modbus_close(*ctx);
+//         modbus_free(*ctx);
+//         *ctx = NULL;
+
+//         retry++;
+//         if (retry < TCP_MAX_RETRY) {
+//             int delay = TCP_BASE_DELAY * (1 << retry);
+//             int jitter = rand() % 4 - 2;
+//             delay += jitter;
+//             if (delay < 1) delay = 1;
+//             LOG_ERROR("TCP:第%d次重试，等待%ds", retry, delay);
+//             sleep(delay);
+//         }
+//     }
+
+//     LOG_ERROR("TCP:所有重试耗尽，进入冷休眠状态");
+//     return -1;
+// }

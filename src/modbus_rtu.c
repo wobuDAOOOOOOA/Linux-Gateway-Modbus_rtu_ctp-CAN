@@ -36,57 +36,6 @@ modbus_t* modbus_rtu_connect(const char *port, int baudrate, int slave_id)
     return ctx;
 }
 
-// ====================== 原版（保留，给不需要热加载的场景用） ======================
-int modbus_rtu_device_read(rtu_device_t *dev, int addr, int nb, uint16_t *dest)
-{
-    int retry = 0;
-    int rc;
-    srand((unsigned)time(NULL) ^ (unsigned)pthread_self());
-
-    while (retry < RTU_MAX_RETRY) {
-        if (dev->ctx == NULL) {
-            LOG_ERROR("RTU:句柄为空，第%d次重连, 设备从站=%d", retry + 1, dev->slave_id);
-            dev->ctx = modbus_rtu_connect(dev->port, dev->baudrate, dev->slave_id);
-            if (dev->ctx == NULL) {
-                int delay = RTU_BASE_DELAY * (1 << retry);
-                int jitter = rand() % 4 - 2;
-                delay += jitter;
-                if (delay < 1) delay = 1;
-
-                retry++;
-                if (retry < RTU_MAX_RETRY) {
-                    LOG_ERROR("RTU:重连失败，等待%ds后重试", delay);
-                    sleep(delay);
-                }
-                continue;
-            }
-        }
-
-        rc = modbus_read_registers(dev->ctx, addr, nb, dest);
-        if (rc != -1) {
-            LOG_INFO("RTU:读取成功，获取%d个寄存器", rc);
-            return rc;
-        }
-
-        LOG_ERROR("RTU:读取失败 err=%s，销毁连接准备重试，从站=%d", modbus_strerror(errno), dev->slave_id);
-        modbus_close(dev->ctx);
-        modbus_free(dev->ctx);
-        dev->ctx = NULL;
-        retry++;
-
-        if (retry < RTU_MAX_RETRY) {
-            int delay = RTU_BASE_DELAY * (1 << retry);
-            int jitter = rand() % 4 - 2;
-            delay += jitter;
-            if (delay < 1) delay = 1;
-            LOG_ERROR("RTU:第%d次重试，等待%ds", retry, delay);
-            sleep(delay);
-        }
-    }
-
-    LOG_ERROR("RTU:读取重试耗尽，最大重试次数%d", RTU_MAX_RETRY);
-    return -1;
-}
 
 // ====================== ★★★ 新版：带显式参数（配合热加载 + 局部变量） ★★★ ======================
 int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave_id,
@@ -98,10 +47,13 @@ int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave
 
     while (retry < RTU_MAX_RETRY) {
         // 1. 句柄为空 → 重连（用传入的参数，不从 dev 读）
+        pthread_mutex_lock(&mgr.rtu_bus_mutex);
+
         if (*ctx == NULL) {
             LOG_ERROR("RTU:句柄为空，第%d次重连, 从站=%d", retry + 1, slave_id);
             *ctx = modbus_rtu_connect(port, baudrate, slave_id);
             if (*ctx == NULL) {
+                 pthread_mutex_unlock(&mgr.rtu_bus_mutex);  
                 int delay = RTU_BASE_DELAY * (1 << retry);
                 int jitter = rand() % 4 - 2;
                 delay += jitter;
@@ -117,12 +69,12 @@ int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave
         }
 
         // 2. 执行读取
-                pthread_mutex_lock(&mgr.rtu_bus_mutex);
 
         rc = modbus_read_registers(*ctx, addr, nb, dest);
-                pthread_mutex_unlock(&mgr.rtu_bus_mutex);
 
         if (rc != -1) {
+         pthread_mutex_unlock(&mgr.rtu_bus_mutex);   //这里的锁要保证重连和读取的时候不能同时操作串口
+
             LOG_INFO("RTU:读取成功，获取%d个寄存器", rc);
             return rc;
         }
@@ -147,3 +99,58 @@ int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave
     LOG_ERROR("RTU:所有重试耗尽，从站=%d 进入冷休眠", slave_id);
     return -1;
 }
+
+
+
+
+// // ====================== 原版（保留，给不需要热加载的场景用） ======================
+// int modbus_rtu_device_read(rtu_device_t *dev, int addr, int nb, uint16_t *dest)
+// {
+//     int retry = 0;
+//     int rc;
+//     srand((unsigned)time(NULL) ^ (unsigned)pthread_self());
+
+//     while (retry < RTU_MAX_RETRY) {
+//         if (dev->ctx == NULL) {
+//             LOG_ERROR("RTU:句柄为空，第%d次重连, 设备从站=%d", retry + 1, dev->slave_id);
+//             dev->ctx = modbus_rtu_connect(dev->port, dev->baudrate, dev->slave_id);
+//             if (dev->ctx == NULL) {
+//                 int delay = RTU_BASE_DELAY * (1 << retry);
+//                 int jitter = rand() % 4 - 2;
+//                 delay += jitter;
+//                 if (delay < 1) delay = 1;
+
+//                 retry++;
+//                 if (retry < RTU_MAX_RETRY) {
+//                     LOG_ERROR("RTU:重连失败，等待%ds后重试", delay);
+//                     sleep(delay);
+//                 }
+//                 continue;
+//             }
+//         }
+
+//         rc = modbus_read_registers(dev->ctx, addr, nb, dest);
+//         if (rc != -1) {
+//             LOG_INFO("RTU:读取成功，获取%d个寄存器", rc);
+//             return rc;
+//         }
+
+//         LOG_ERROR("RTU:读取失败 err=%s，销毁连接准备重试，从站=%d", modbus_strerror(errno), dev->slave_id);
+//         modbus_close(dev->ctx);
+//         modbus_free(dev->ctx);
+//         dev->ctx = NULL;
+//         retry++;
+
+//         if (retry < RTU_MAX_RETRY) {
+//             int delay = RTU_BASE_DELAY * (1 << retry);
+//             int jitter = rand() % 4 - 2;
+//             delay += jitter;
+//             if (delay < 1) delay = 1;
+//             LOG_ERROR("RTU:第%d次重试，等待%ds", retry, delay);
+//             sleep(delay);
+//         }
+//     }
+
+//     LOG_ERROR("RTU:读取重试耗尽，最大重试次数%d", RTU_MAX_RETRY);
+//     return -1;
+// }
