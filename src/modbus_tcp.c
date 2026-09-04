@@ -9,7 +9,7 @@
 #include "gateway.h"
 #include "modbus_tcp.h"
 
-#define TCP_MAX_RETRY     3
+#define TCP_MAX_RETRY     2
 #define TCP_BASE_DELAY    5
 
 extern gateway_config_t cfg;

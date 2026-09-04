@@ -19,7 +19,7 @@
 #include "data_cache.h"
 
 #define true 1
-
+#define COLD_SLEEP_TIME 10
 // 全局变量定义
 gateway_manager_t mgr;
 volatile sig_atomic_t g_config_reload_flag = 0;
@@ -68,7 +68,7 @@ void gateway_cleanup(void)
             modbus_close(mgr.tcp_devices[i].ctx);
             modbus_free(mgr.tcp_devices[i].ctx);
             mgr.tcp_devices[i].ctx = NULL;
-            LOG_DEBUG("TCP设备%d: 已释放Modbus上下文", i);
+            LOG_INFO("TCP设备%d: 已释放Modbus上下文", i);
         }
     }
 
@@ -77,7 +77,7 @@ void gateway_cleanup(void)
             modbus_close(mgr.rtu_devices[i].ctx);
             modbus_free(mgr.rtu_devices[i].ctx);
             mgr.rtu_devices[i].ctx = NULL;
-            LOG_DEBUG("RTU设备%d: 已释放Modbus上下文", i);
+            LOG_INFO("RTU设备%d: 已释放Modbus上下文", i);
         }
     }
 
@@ -191,7 +191,7 @@ void *modbus_tcp_read_generic(void *arg)
             local_port = dev_reload->port;
             local_slave_id = dev_reload->slave_id;
             pthread_rwlock_unlock(&mgr.config_lock);
-            LOG_DEBUG("TCP设备%d: 重新读取配置", idx);
+            LOG_INFO("TCP设备%d: 重新读取配置", idx);
         }
 
         // ===== 采集开关状态变化检测（运行时状态，不需要锁） =====
@@ -222,7 +222,7 @@ void *modbus_tcp_read_generic(void *arg)
         }
 
         // ===== 执行采集（用局部变量，不用 dev->ip/port/slave_id） =====
-        printf("IP=%s, 端口=%d, 从站=%d\n", local_ip, local_port, local_slave_id);
+        LOG_DEBUG("IP=%s, 端口=%d, 从站=%d\n", local_ip, local_port, local_slave_id);
 
         // ★ 需要 modbus_tcp_device_read_with_params 版本
         if (modbus_tcp_device_read_with_params(local_ip, local_port, local_slave_id,
@@ -236,7 +236,7 @@ void *modbus_tcp_read_generic(void *arg)
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg),
                          "TCP离线,首次故障: %s", time_str);
             }
-        if (cold_sleep_with_check(60) == -1) {
+        if (cold_sleep_with_check(COLD_SLEEP_TIME) == -1) {
             LOG_INFO("冷休眠被热加载中断");
             break;  // 退出线程
         }
@@ -251,7 +251,7 @@ void *modbus_tcp_read_generic(void *arg)
         }
 
         for (int i = 0; i < local_read_count; i++) {
-            LOG_INFO("TCP_REG[%d] = %d", i, dev->regs[i]);
+            LOG_DEBUG("TCP_REG[%d] = %d", i, dev->regs[i]);
         }
 
         // pthread_mutex_lock(&mgr.bus_mutex);
@@ -300,7 +300,7 @@ void *modbus_rtu_read_generic(void *arg)
     snprintf(dev->alarm_msg, sizeof(dev->alarm_msg), "RTU初始化完成");
     snprintf(dev->name, sizeof(dev->name), "RTU_Dev_%d", idx);
 
-    LOG_INFO("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d, 读地址=%d, 读数量=%d",
+    LOG_DEBUG("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d, 读地址=%d, 读数量=%d",
              idx, local_port, local_baudrate, local_slave_id,
              local_read_addr, local_read_count);
 
@@ -349,7 +349,7 @@ void *modbus_rtu_read_generic(void *arg)
         }
 
         // ===== 执行采集（用局部变量） =====
-        printf("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d\n",
+        LOG_DEBUG("RTU设备%d: 串口=%s, 波特率=%d, 从站=%d\n",
                idx, local_port, local_baudrate, local_slave_id);
 
         // ★ 需要 modbus_rtu_device_read_with_params 版本
@@ -365,7 +365,7 @@ void *modbus_rtu_read_generic(void *arg)
                 snprintf(dev->alarm_msg, sizeof(dev->alarm_msg),
                          "RTU离线，首次故障: %s", time_str);
             }
-             if (cold_sleep_with_check(60) == -1) {
+             if (cold_sleep_with_check(COLD_SLEEP_TIME) == -1) {
             LOG_INFO("冷休眠被热加载中断");
             break;  // 退出线程
         }
@@ -412,7 +412,7 @@ void *can_receive_pthread(void *arg) {
                     
                     // 打印接收到的数据
                     for (int j = 0; j < len; j++) {
-                        LOG_INFO("CAN 设备[%d] ID=0x%x 数据[%d]=%d", i, can_id, j, data[j]);
+                        LOG_DEBUG("CAN 设备[%d] ID=0x%x 数据[%d]=%d\n", i, can_id, j, data[j]);
                     }
                     
                     // 加锁保存数据
@@ -426,7 +426,7 @@ void *can_receive_pthread(void *arg) {
             
             // 没找到匹配的设备，打印警告（可选）
             if (!found) {
-                LOG_WARN("CAN: 收到未知设备ID=0x%x 的数据，已忽略", can_id);
+                LOG_WARN("CAN: 收到未知设备ID=0x%x 的数据，已忽略\n", can_id);
             }
         }
         usleep(1000);  // 1ms，防止CPU空转
@@ -486,38 +486,81 @@ void *MQTT_pthread(void *arg) {
         } else {
             build_current_json(json_buf, sizeof(json_buf));
             data_cache_push_telemetry_json(json_buf);
-            printf("【缓存】MQTT离线，数据已缓存\n");
+            LOG_WARN("【缓存】MQTT离线，数据已缓存\n");
         }
         
 /*TO DO data_cache_flush() 是同步执行，执行补传的时候mqtt不会去读取共享结构体，导致补传期间数据丢失
 需要把补传放入一个单独的线程补传时mqtt线程读共享结构体拼接json继续放到数据库直到补传完成才正常上报*/
         // ===== 3. RTU 设备状态上报（用 rtu_status_copy，不用 mgr.rtu_devices） =====
-        for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
-            if (rtu_status_copy[i] != last_rtu_status[i]) {
-                if (rtu_status_copy[i] == 0) {
-                    mqtt_publish_alarm("RTU", i, "running", "RTU", "RTU采集运行中");
-                } else if (rtu_status_copy[i] == 1) {
-                    mqtt_publish_alarm("RTU", i, "stopped", "RTU", "RTU采集已关闭");
-                } else if (rtu_status_copy[i] == 2) {
-                    mqtt_publish_alarm("RTU", i, "offline", "RTU", rtu_alarm_copy[i]);
-                }
-                last_rtu_status[i] = rtu_status_copy[i];
-            }
+   // ===== 3. RTU 设备状态上报（统一处理，先检测变化，再决定走MQTT还是缓存） =====
+for (int i = 0; i < rtu_count && i < MAX_RTU_DEVICES; i++) {
+    int current_status = rtu_status_copy[i];
+    
+    // ★ 只有状态发生变化时才处理
+    if (current_status != last_rtu_status[i]) {
+        // 1. 构造告警参数
+        const char *alarm_type;
+        const char *alarm_msg;
+        if (current_status == 0) {
+            alarm_type = "running";
+            alarm_msg = "RTU采集运行中";
+        } else if (current_status == 1) {
+            alarm_type = "stopped";
+            alarm_msg = "RTU采集已关闭";
+        } else { // status == 2
+            alarm_type = "offline";
+            alarm_msg = rtu_alarm_copy[i];
         }
 
-        // ===== 4. TCP 设备状态上报（用 tcp_status_copy） =====
-        for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
-            if (tcp_status_copy[i] != last_tcp_status[i]) {
-                if (tcp_status_copy[i] == 0) {
-                    mqtt_publish_alarm("TCP", i, "running", "TCP", "TCP采集运行中");
-                } else if (tcp_status_copy[i] == 1) {
-                    mqtt_publish_alarm("TCP", i, "stopped", "TCP", "TCP采集已关闭");
-                } else if (tcp_status_copy[i] == 2) {
-                    mqtt_publish_alarm("TCP", i, "offline", "TCP", tcp_alarm_copy[i]);
-                }
-                last_tcp_status[i] = tcp_status_copy[i];
-            }
+        // 2. 根据MQTT连接状态决定走哪条路
+        if (mgr.mqtt_connect_states) {
+            // ★ MQTT在线 → 直接上报MQTT
+            mqtt_publish_alarm("RTU", i, alarm_type,"RTU", alarm_msg);
+        } else {
+            // ★ MQTT离线 → 入缓存，等上线后补发
+            data_cache_push_alarm_rtu("RTU", i, alarm_type, alarm_msg);
+            LOG_INFO("RTU设备%d 状态变化 入缓存 (状态=%s)\n", i, alarm_type);
         }
+
+        // 3. 更新上次状态
+        last_rtu_status[i] = current_status;
+    }
+}
+
+    // ===== 4. TCP 设备状态上报（统一处理，先检测变化，再决定走MQTT还是缓存） =====
+for (int i = 0; i < tcp_count && i < MAX_TCP_DEVICES; i++) {
+    int current_status = tcp_status_copy[i];
+    
+    // ★ 只有状态发生变化时才处理
+    if (current_status != last_tcp_status[i]) {
+        // 1. 构造告警参数
+        const char *alarm_type;
+        const char *alarm_msg;
+        if (current_status == 0) {
+            alarm_type = "running";
+            alarm_msg = "TCP采集运行中";
+        } else if (current_status == 1) {
+            alarm_type = "stopped";
+            alarm_msg = "TCP采集已关闭";
+        } else { // status == 2
+            alarm_type = "offline";
+            alarm_msg = tcp_alarm_copy[i];
+        }
+
+        // 2. 根据MQTT连接状态决定走哪条路
+        if (mgr.mqtt_connect_states) {
+            // ★ MQTT在线 → 直接上报MQTT
+            mqtt_publish_alarm("TCP", i, alarm_type, "TCP", alarm_msg);
+        } else {
+            // ★ MQTT离线 → 入缓存，等上线后补发
+            data_cache_push_alarm_tcp("TCP", i,  alarm_msg);
+            LOG_INFO("TCP设备%d 状态变化 入缓存 (状态=%s)\n", i, alarm_type);
+        }
+
+        // 3. 更新上次状态
+        last_tcp_status[i] = current_status;
+    }
+}
 
         // ===== 5. CAN 状态上报 =====
         can_status_t can_status;
@@ -542,7 +585,7 @@ void *MQTT_pthread(void *arg) {
 // ====================== 热加载核心函数 ======================
 void reconfig_hot(void)
 {
-    LOG_INFO("热加载开始，停止所有采集线程...");
+    LOG_WARN ("热加载开始，停止所有采集线程...");
 
     // 1. 停止所有采集线程
     mgr.collect_stop = 1;
@@ -552,7 +595,7 @@ void reconfig_hot(void)
         if (mgr.threads[10 + i] != 0) {
             pthread_join(mgr.threads[10 + i], NULL);
             mgr.threads[10 + i] = 0;
-            LOG_DEBUG("RTU线程 %d 已退出", i);
+            LOG_INFO("RTU线程 %d 已退出", i);
         }
     }
     // 等待所有 TCP 采集线程退出 (threads[2] ~ threads[2+MAX_TCP_DEVICES-1])
@@ -560,7 +603,7 @@ void reconfig_hot(void)
         if (mgr.threads[2 + i] != 0) {
             pthread_join(mgr.threads[2 + i], NULL);
             mgr.threads[2 + i] = 0;
-            LOG_DEBUG("TCP线程 %d 已退出", i);
+            LOG_INFO("TCP线程 %d 已退出", i);
         }
     }
 
@@ -593,7 +636,7 @@ void reconfig_hot(void)
         LOG_INFO("TCP线程 %d 已创建", i);
     }
         pthread_create(&mgr.threads[1], NULL, can_receive_pthread, &mgr);
-                LOG_INFO("CAN线程 %d 已创建\n");
+        LOG_INFO("CAN线程 %d 已创建\n");
 
     LOG_INFO("热加载完成！");
 }
@@ -611,8 +654,8 @@ int main(void) {
 
     config_set_default(&cfg);
     config_load("./gateway.conf", &cfg);
-    printf("Modbus port: %s\n", cfg.modbus_port);
-    printf("can port: %s\n", cfg.can_interface);
+    LOG_INFO("Modbus port: %s\n", cfg.modbus_port);
+    LOG_INFO("can port: %s\n", cfg.can_interface);
 
     mqtt_Init();
     can_Init();

@@ -8,7 +8,7 @@
 #include "config.h"
 #include "gateway.h"
 
-#define RTU_MAX_RETRY     3
+#define RTU_MAX_RETRY     2
 #define RTU_BASE_DELAY    5
 
 extern gateway_config_t cfg;
@@ -55,7 +55,9 @@ int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave
             if (*ctx == NULL) {
                  pthread_mutex_unlock(&mgr.rtu_bus_mutex);  
                 int delay = RTU_BASE_DELAY * (1 << retry);
-                int jitter = rand() % 4 - 2;
+                /*你每次调用 rand()，都会得到一个 0 到 RAND_MAX 之间的整数如果想把它限制在一个小
+                范围，就用 % 4 取余数，得到 0、1、2、3 */
+                int jitter = rand() % 4 - 2;    
                 delay += jitter;
                 if (delay < 1) delay = 1;
 
@@ -71,9 +73,9 @@ int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave
         // 2. 执行读取
 
         rc = modbus_read_registers(*ctx, addr, nb, dest);
+                pthread_mutex_unlock(&mgr.rtu_bus_mutex);   //这里的锁要保证重连和读取的时候不能同时操作串口
 
         if (rc != -1) {
-         pthread_mutex_unlock(&mgr.rtu_bus_mutex);   //这里的锁要保证重连和读取的时候不能同时操作串口
 
             LOG_INFO("RTU:读取成功，获取%d个寄存器", rc);
             return rc;
@@ -87,7 +89,7 @@ int modbus_rtu_device_read_with_params(const char *port, int baudrate, int slave
         retry++;
 
         if (retry < RTU_MAX_RETRY) {
-            int delay = RTU_BASE_DELAY * (1 << retry);
+            int delay = RTU_BASE_DELAY * (1 << retry);//2的retry次方
             int jitter = rand() % 4 - 2;
             delay += jitter;
             if (delay < 1) delay = 1;

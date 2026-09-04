@@ -12,7 +12,30 @@ static int g_flushing = 0;
 
 static data_cache_t g_cache;
 static pthread_mutex_t g_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+  /*  建表这里面已经帮你写好了prepare step  然后finalize释放
 
+            sqlite3_prepare_v2() → 把 SQL 文本编译成 stmt （真正的sql语句的句柄）
+            sqlite3_bind_*() → 往 ? 里填值（加调料）
+            sqlite3_step() → 开火执行（真正炒菜，数据库变了）
+            sqlite3_finalize() → 扔掉配菜盘（释放资源） 
+            建表和删表的时候就用exec，如果是插入和查询就得用prepare了
+
+      插入占位符并且bind进去具体变量，以后插入就是插入这个变量的具体值
+   
+            因为插入你得先执行inser（sql），之后才能用bind不然bind的时候不懂
+            该往哪里bind。既然要执行inser （sql）就要用preare。（这样bind的时候拿着句柄）
+            然后自己step。然后finalize
+    
+      查询就是用就是执行select（sql）语句还是一样的操作。
+            
+            这个select说是把所有的文本取出来（用了这个sql语句的时候stmt是指向最早进入的那一行吗？不对啊，stmt是这个sql语句的句柄）
+            然后用 while (sqlite3_step(stmt) == SQLITE_ROW)  （这里具体怎么实现的这样一行一行的取的）
+            只要能成功移到下一行（还有数据），就把当前行取出来处理；移到末尾（没数据了）就退出循环。"
+            这里就取一行然后取对应元素存好
+        */
+
+
+ 
 // ====================== SQLite 内部操作 ======================
 
 static int db_exec(sqlite3 *db, const char *sql)
@@ -30,6 +53,7 @@ static int db_exec(sqlite3 *db, const char *sql)
 static int db_insert_record(sqlite3 *db, data_record_t *rec)
 {
     sqlite3_stmt *stmt = NULL;
+  
     const char *sql =
         "INSERT INTO cache (type, timestamp, temperature, humidity, pressure, "
         "json_payload, alarm_type, alarm_module, alarm_msg) "
@@ -120,8 +144,18 @@ void data_cache_init(void)
         "alarm_module TEXT,"
         "alarm_msg TEXT"
         ");";
+        /*第一步建表，这里面已经帮你写好了prepare step  然后finalize释放
+            sqlite3_prepare_v2() → 把 SQL 文本编译成 stmt
+            sqlite3_bind_*() → 往 ? 里填值（加调料）
+            sqlite3_step() → 开火执行（真正炒菜，数据库变了）
+            sqlite3_finalize() → 扔掉配菜盘（释放资源）  
+            建表和删表的时候就用exec，如果是插入和查询就得用prepare了
+            因为插入你得先执行inser（sql），之后才能用bind不然bind的时候不懂
+            该往哪里bind。既然要执行inser （sql）就要用preare。
+            然后自己step。
+        */
+    db_exec(g_cache.db, sql);   
 
-    db_exec(g_cache.db, sql);
     printf("【缓存】SQLite缓存初始化完成，最大容量: %d\n", g_cache.max_records);
 }
 

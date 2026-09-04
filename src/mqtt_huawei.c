@@ -24,7 +24,7 @@ static void mqtt_resubscribe(void)
 {
     int ret = mosquitto_subscribe(g_mosq, NULL, MQTT_SUB_CMD_TOPIC, 1);
     if(ret == MOSQ_ERR_SUCCESS) {
-        printf("MQTT: 重连后重新订阅成功\n");
+        LOG_INFO("MQTT: 重连后重新订阅成功\n");
     } else {
         fprintf(stderr, "MQTT: 重连后重新订阅失败, 错误码: %d\n", ret);
     }
@@ -180,7 +180,6 @@ int mqtt_publish_data(float temperature, float humidity , float press)
     return 0;
 }
 
-#include <time.h>
 
 // ====================== 告警事件上报 ======================
 int mqtt_publish_TCP_alarm(const char *Modbus_TCP_alarm_type, const char *Modbus_TCP_alarm_module, const char *Modbus_TCP_alarm_msg) {

@@ -300,16 +300,33 @@ int can_receive(uint32_t *can_id, unsigned char *buffer, int *len)
         return -1;
     }
 
-    int nbytes = read(s, &frame, sizeof(frame));
+        int nbytes = read(s, &frame, sizeof(frame));
 
     if (nbytes < 0) {
-        if (errno != EAGAIN) {
-            perror("can read");
-            LOG_ERROR("CAN:读取错误");
-            can_reinit();
-            return -1;
+        switch (errno) {
+            case EAGAIN:
+          //  case EWOULDBLOCK:
+                return 1;  // 没有数据，正常
+
+            case EINTR:
+                return 1;  // 被信号中断，上层继续读
+
+            case EBADF:
+                LOG_ERROR("CAN: socket 无效，触发重连");
+                can_reinit();
+                return -1;
+
+            case ENETDOWN:
+            case ENETUNREACH:
+                LOG_ERROR("CAN: 网络不可用，触发重连");
+                can_reinit();
+                return -1;
+
+            default:
+                LOG_ERROR("CAN: 未知错误 %d (%s)，触发重连", errno, strerror(errno));
+                can_reinit();
+                return -1;
         }
-        return 1;  // EAGAIN 表示暂时没有数据
     }
 
     if (nbytes == sizeof(frame)) {
